@@ -1,35 +1,100 @@
 //! The standard compiler transaction and its open planning operations.
 
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
 use proc_macro2::{Ident, Span, TokenStream};
 use syn::Result;
 
 use crate::compiler::{CompilerContext, Layer, Operation, Registry};
-use crate::hir::{Atom, HirProgram, Rule};
+use crate::flowlog_plan;
+use crate::hir::{Atom, HirProgram, Relation, RelationId, Rule};
 use crate::rule_plan::RulePlan;
 use crate::{lower, parse};
+
+/// Immutable resolved-program context shared by rule-planning requests.
+#[derive(Clone)]
+pub struct PlanningCatalog {
+    relations: Arc<[Relation]>,
+    rules: Arc<[Rule]>,
+}
+
+impl PlanningCatalog {
+    pub(crate) fn new(relations: Vec<Relation>, rules: Vec<Rule>) -> Self {
+        Self {
+            relations: relations.into(),
+            rules: rules.into(),
+        }
+    }
+
+    /// Resolve a relation identity.
+    #[must_use]
+    pub fn relation(&self, id: RelationId) -> &Relation {
+        &self.relations[id.index()]
+    }
+
+    /// Return every resolved rule in source order.
+    #[must_use]
+    pub fn rules(&self) -> &[Rule] {
+        &self.rules
+    }
+}
 
 /// Input to the default rule-planning operation.
 #[derive(Clone)]
 pub struct RuleRequest {
-    rule: Rule,
-    head: Atom,
+    catalog: PlanningCatalog,
+    rule_index: usize,
+    head_index: usize,
+    initialized: BTreeSet<RelationId>,
+    recursive: bool,
 }
 
 impl RuleRequest {
-    pub(crate) const fn new(rule: Rule, head: Atom) -> Self {
-        Self { rule, head }
+    pub(crate) const fn new(
+        catalog: PlanningCatalog,
+        rule_index: usize,
+        head_index: usize,
+        initialized: BTreeSet<RelationId>,
+        recursive: bool,
+    ) -> Self {
+        Self {
+            catalog,
+            rule_index,
+            head_index,
+            initialized,
+            recursive,
+        }
+    }
+
+    /// Return the immutable resolved-program catalog.
+    #[must_use]
+    pub const fn catalog(&self) -> &PlanningCatalog {
+        &self.catalog
     }
 
     /// Return the resolved source rule.
     #[must_use]
-    pub const fn rule(&self) -> &Rule {
-        &self.rule
+    pub fn rule(&self) -> &Rule {
+        &self.catalog.rules[self.rule_index]
     }
 
     /// Return the particular rule head being planned.
     #[must_use]
-    pub const fn head(&self) -> &Atom {
-        &self.head
+    pub fn head(&self) -> &Atom {
+        &self.rule().heads[self.head_index]
+    }
+
+    /// Return relations already materialized before this rule.
+    #[must_use]
+    pub const fn initialized(&self) -> &BTreeSet<RelationId> {
+        &self.initialized
+    }
+
+    /// Report whether the rule is being planned inside a recursive SCC.
+    #[must_use]
+    pub const fn recursive(&self) -> bool {
+        self.recursive
     }
 }
 
@@ -57,6 +122,7 @@ impl Compiler {
     /// Returns a diagnostic if standard operation definitions conflict.
     pub fn new() -> Result<Self> {
         let mut registry = Registry::default();
+        flowlog_plan::install(&mut registry);
         registry
             .define::<PlanRule, _>(|_, request| RulePlan::build(request.rule(), request.head()))?;
         Ok(Self {

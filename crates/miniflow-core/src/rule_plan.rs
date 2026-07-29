@@ -53,6 +53,10 @@ pub struct RulePlan {
 }
 
 impl RulePlan {
+    pub(crate) const fn from_graph(graph: Plan, root: NodeId) -> Self {
+        Self { graph, root }
+    }
+
     /// Construct the default relational plan.
     ///
     /// # Errors

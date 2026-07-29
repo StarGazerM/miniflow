@@ -4,6 +4,7 @@ use std::rc::Rc;
 use quote::quote;
 
 use super::{Compiler, PlanRule};
+use crate::rule_plan::RulePlan;
 
 #[test]
 fn a_language_pack_can_intercept_real_rule_planning() {
@@ -22,13 +23,29 @@ fn a_language_pack_can_intercept_real_rule_planning() {
             struct Program;
             relation edge(i32, i32);
             relation path(i32, i32);
-            path(a, e) <--
-                edge(a, b),
-                edge(b, c),
-                edge(c, d),
-                edge(d, e);
+            path(x, y) <-- edge(x, y);
         })
         .unwrap();
 
     assert_eq!(calls.get(), 1);
+}
+
+#[test]
+fn an_external_layer_can_replace_a_standard_physical_plan() {
+    let mut compiler = Compiler::new().unwrap();
+    compiler
+        .registry_mut()
+        .around::<PlanRule, _>(|_, request, _next| RulePlan::build(request.rule(), request.head()));
+
+    let expansion = compiler
+        .compile(quote! {
+            struct Program;
+            relation edge(i32, i32);
+            relation path(i32, i32);
+            path(x, y) <-- edge(x, y);
+        })
+        .unwrap()
+        .to_string();
+
+    assert!(expansion.contains("__miniflow_rule_0"));
 }

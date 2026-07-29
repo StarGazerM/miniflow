@@ -6,14 +6,24 @@ use quote::{format_ident, quote};
 use syn::{Expr, Result};
 
 use crate::compiler::{CompilerContext, Registry};
+use crate::flowlog_analysis::{
+    binary_expression_variables, dereferenced_variable_name, expression_mentions_ident,
+    expression_type, expression_variable_ident, expression_variables, flowlog_arithmetic,
+    flowlog_arithmetic_with, flowlog_comparison_operator, flowlog_constant, flowlog_data_type,
+    flowlog_variable, variable_name,
+};
 use crate::flowlog_fp;
 use crate::flowlog_fp::TransformationArgument;
+use crate::flowlog_plan::{
+    DIRECT_AGGREGATE, DirectAggregatePlan, SINGLE_FILTER, SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP,
+    SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE, SingleAtomPlan,
+};
 use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId, Rule, Scc};
-use crate::pipeline::{PlanRule, RuleRequest};
+use crate::pipeline::{PlanRule, PlanningCatalog, RuleRequest};
 use crate::plan::OperatorKey;
 use crate::rule_plan::{
     AGGREGATE, ANTIJOIN, Binding, BindingMap, CONDITION, FACT, GENERATOR, IF_LET, JOIN, LET,
-    PROJECT, RuleStep, SOURCE,
+    PROJECT, RulePlan, RuleStep, SOURCE,
 };
 
 impl HirProgram {
@@ -183,6 +193,7 @@ impl HirProgram {
 
         let mut stages = Vec::with_capacity(self.sccs.len());
         let mut emitted_transformations = BTreeSet::new();
+        let catalog = PlanningCatalog::new(self.relations.clone(), self.rules.clone());
         let mut initialized = edbs
             .iter()
             .map(|relation| relation.id)
@@ -192,6 +203,7 @@ impl HirProgram {
                 scc,
                 &mut initialized,
                 &mut emitted_transformations,
+                &catalog,
                 registry,
                 context,
             )?);
@@ -368,11 +380,12 @@ impl HirProgram {
         scc: &Scc,
         initialized: &mut BTreeSet<RelationId>,
         emitted_transformations: &mut BTreeSet<String>,
+        catalog: &PlanningCatalog,
         registry: &Registry,
         context: &mut CompilerContext,
     ) -> Result<TokenStream> {
         if scc.recursive {
-            let emitted = self.emit_recursive_scc(scc, initialized, registry, context)?;
+            let emitted = self.emit_recursive_scc(scc, initialized, catalog, registry, context)?;
             initialized.extend(
                 scc.rules
                     .iter()
@@ -389,6 +402,7 @@ impl HirProgram {
                 emitted.extend(self.emit_non_recursive_rule(
                     rule_index,
                     initialized,
+                    catalog,
                     registry,
                     context,
                 )?);
@@ -526,17 +540,28 @@ impl HirProgram {
         &self,
         rule_index: usize,
         initialized: &mut BTreeSet<RelationId>,
+        catalog: &PlanningCatalog,
         registry: &Registry,
         context: &mut CompilerContext,
     ) -> Result<Vec<TokenStream>> {
+        let rule = &self.rules[rule_index];
+        let mut planned = if rule.heads.len() == 1 {
+            Some(registry.perform::<PlanRule>(
+                context,
+                RuleRequest::new(catalog.clone(), rule_index, 0, initialized.clone(), false),
+            )?)
+        } else {
+            None
+        };
         if let Some((target_relation, emitted)) =
-            self.emit_flowlog_single_atom_expression(rule_index, initialized)
+            planned.as_ref().and_then(Self::render_flowlog_single_atom)
         {
             initialized.insert(target_relation);
             return Ok(vec![emitted]);
         }
-        if let Some((target_relation, emitted)) =
-            self.emit_flowlog_direct_aggregate(rule_index, initialized)
+        if let Some((target_relation, emitted)) = planned
+            .as_ref()
+            .and_then(Self::render_flowlog_direct_aggregate)
         {
             initialized.insert(target_relation);
             return Ok(vec![emitted]);
@@ -565,12 +590,27 @@ impl HirProgram {
             initialized.insert(target_relation);
             return Ok(vec![emitted]);
         }
-        let rule = &self.rules[rule_index];
         let mut emitted = Vec::with_capacity(rule.heads.len());
-        for head in &rule.heads {
+        for (head_index, head) in rule.heads.iter().enumerate() {
             let derived = format_ident!("__miniflow_rule_{}", emitted.len());
-            let expression =
-                self.emit_rule_expression(rule, head, ScopeMode::Outer, registry, context)?;
+            let expression = if head_index == 0
+                && let Some(plan) = planned.take()
+            {
+                self.render_rule_plan(&plan, ScopeMode::Outer)?
+            } else {
+                self.emit_rule_expression(
+                    RuleRequest::new(
+                        catalog.clone(),
+                        rule_index,
+                        head_index,
+                        initialized.clone(),
+                        false,
+                    ),
+                    ScopeMode::Outer,
+                    registry,
+                    context,
+                )?
+            };
             let target = collection_ident(&self.relations[head.relation.0]);
             if initialized.insert(head.relation) {
                 emitted.push(quote! {
@@ -587,211 +627,61 @@ impl HirProgram {
         Ok(emitted)
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn emit_flowlog_single_atom_expression(
-        &self,
-        rule_index: usize,
-        initialized: &BTreeSet<RelationId>,
-    ) -> Option<(RelationId, TokenStream)> {
-        let rule = &self.rules[rule_index];
-        let [head] = rule.heads.as_slice() else {
-            return None;
-        };
-        let [BodyItem::Atom(source), conditions @ ..] = rule.body.as_slice() else {
-            return None;
-        };
-        let source_relation = &self.relations[source.relation.0];
-        let target_relation = &self.relations[head.relation.0];
-        if !initialized.contains(&source.relation)
-            || self.rules.iter().any(|candidate| {
-                candidate.heads.len() > 1
-                    && candidate
-                        .heads
-                        .iter()
-                        .any(|candidate_head| candidate_head.relation == head.relation)
-            })
-            || source.arguments.len() != source_relation.columns.len()
-            || head.arguments.len() != target_relation.columns.len()
-        {
+    fn render_flowlog_single_atom(plan: &RulePlan) -> Option<(RelationId, TokenStream)> {
+        let root = plan.root();
+        let operator = plan.graph().nodes().get(root.index())?.operator();
+        if !matches!(
+            operator,
+            SINGLE_IDENTITY
+                | SINGLE_MAP_IN_PLACE
+                | SINGLE_FILTER
+                | SINGLE_FILTER_BLOCK
+                | SINGLE_FLAT_MAP
+        ) {
             return None;
         }
-
-        let rows = row_bindings_flowlog(source_relation);
-        let mut bindings = BTreeMap::<String, usize>::new();
-        let mut constant_equalities = Vec::new();
-        let mut variable_equalities = Vec::new();
-        let mut predicates = Vec::new();
-        let mut pattern = Vec::with_capacity(source.arguments.len());
-        for (index, (argument, column_type)) in source
-            .arguments
+        let physical = plan
+            .graph()
+            .facts()
+            .relation::<SingleAtomPlan>()
             .iter()
-            .zip(&source_relation.columns)
-            .enumerate()
-        {
-            let row = &rows[index];
-            match argument {
-                Expr::Infer(_) => {
-                    pattern.push(format_ident!("_x{index}"));
-                }
-                _ if expression_variable_ident(argument).is_some() => {
-                    let name = variable_name(argument)?;
-                    if let Some(&previous) = bindings.get(&name) {
-                        variable_equalities.push((
-                            TransformationArgument::KV((false, previous)),
-                            TransformationArgument::KV((false, index)),
-                        ));
-                        let previous_row = &rows[previous];
-                        predicates.push(quote! { #previous_row == #row });
-                    } else {
-                        bindings.insert(name, index);
-                    }
-                    pattern.push(row.clone());
-                }
-                Expr::Lit(_) => {
-                    let constant = flowlog_constant(argument, column_type)?;
-                    constant_equalities
-                        .push((TransformationArgument::KV((false, index)), constant));
-                    let literal = emit_flowlog_literal(argument, column_type)?;
-                    predicates.push(quote! { #row == #literal });
-                    pattern.push(row.clone());
-                }
-                _ => return None,
-            }
-        }
+            .find(|physical| physical.node() == root)?;
+        let head = physical.head();
+        let source_relation = physical.source_relation();
+        let target_relation = physical.target_relation();
+        let bindings = physical.bindings();
+        let SingleRenderInput {
+            rows,
+            source_pattern,
+            predicates,
+        } = render_single_input(physical)?;
 
-        let mut comparisons = Vec::new();
-        for condition in conditions {
-            let BodyItem::Condition(condition) = condition else {
-                return None;
-            };
-            let comparison: syn::ExprBinary = match condition {
-                Expr::Binary(comparison) => comparison.clone(),
-                Expr::Call(_) => syn::parse_quote! { #condition == true },
-                Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Not(_)) => {
-                    let inner = &unary.expr;
-                    syn::parse_quote! { #inner == false }
-                }
-                _ => return None,
-            };
-            let operator = flowlog_comparison_operator(&comparison.op)?;
-            let known_type = match comparison.left.as_ref() {
-                Expr::Call(call)
-                    if matches!(
-                        call.func.as_ref(),
-                        Expr::Path(path)
-                            if path.path.segments.last().is_some_and(|segment| {
-                                matches!(
-                                    segment.ident.to_string().as_str(),
-                                    "strlen" | "ord" | "to_number"
-                                )
-                            })
-                    ) =>
-                {
-                    Some(syn::parse_quote!(i32))
-                }
-                _ => None,
-            };
-            let comparison_type = known_type
-                .or_else(|| expression_type(&comparison.left, &bindings, source_relation))
-                .or_else(|| expression_type(&comparison.right, &bindings, source_relation))?;
-            let right_type = matches!(
-                comparison.right.as_ref(),
-                Expr::Lit(syn::ExprLit {
-                    lit: syn::Lit::Bool(_),
-                    ..
-                })
-            )
-            .then(|| syn::parse_quote!(bool));
-            comparisons.push(flowlog_fp::ComparisonExprArgument {
-                left: flowlog_arithmetic(&comparison.left, &bindings, &comparison_type)?,
-                operator,
-                right: flowlog_arithmetic(
-                    &comparison.right,
-                    &bindings,
-                    right_type.as_ref().unwrap_or(&comparison_type),
-                )?,
-            });
-            let left = emit_flowlog_expression(&comparison.left, &bindings, &rows)?;
-            let right = emit_flowlog_expression(&comparison.right, &bindings, &rows)?;
-            let operator = &comparison.op;
-            predicates.push(quote! { (#left) #operator (#right) });
-        }
-
-        let values = head
-            .arguments
-            .iter()
-            .zip(&target_relation.columns)
-            .map(|(argument, column_type)| flowlog_arithmetic(argument, &bindings, column_type))
-            .collect::<Option<Vec<_>>>()?;
-        let fingerprint = flowlog_fp::unary_expressions(
-            "row_to_row",
-            flowlog_fp::relation(&flowlog_relation_fingerprint_name(source_relation)),
-            Vec::new(),
-            values,
-            constant_equalities,
-            variable_equalities,
-            comparisons,
-        );
-        let transform = format_ident!("t_{fingerprint}");
+        let transform = format_ident!("t_{}", physical.fingerprint());
         let source_collection = collection_ident(source_relation);
         let target_collection = collection_ident(target_relation);
         let source_type = tuple_type(source_relation);
-        let source_pattern = tuple(pattern.into_iter().map(|ident| quote! { #ident }));
         let head_fields = head
             .arguments
             .iter()
-            .map(|argument| emit_flowlog_expression(argument, &bindings, &rows))
+            .map(|argument| emit_flowlog_expression(argument, bindings, &rows))
             .collect::<Option<Vec<_>>>()?;
         let head_tuple = tuple(head_fields);
-        let source_variables = source
-            .arguments
-            .iter()
-            .map(variable_name)
-            .collect::<Option<Vec<_>>>();
-        let head_variables = head
-            .arguments
-            .iter()
-            .map(variable_name)
-            .collect::<Option<Vec<_>>>();
-        let identity = source_variables.is_some() && source_variables == head_variables;
-        let tuple_predicate = conditions.iter().any(|condition| {
-            matches!(condition, BodyItem::Condition(expression) if expression_contains_tuple(expression))
-        });
-        let type_preserving = predicates.is_empty()
-            && head.arguments.len() == source.arguments.len()
-            && source_relation.columns.iter().all(flowlog_copy_type)
-            && source_relation
-                .columns
-                .iter()
-                .zip(&target_relation.columns)
-                .all(|(source, target)| {
-                    quote! { #source }.to_string() == quote! { #target }.to_string()
-                });
-        let operation = if identity && predicates.is_empty() {
+        let operation = if operator == SINGLE_IDENTITY {
             TokenStream::new()
-        } else if type_preserving {
+        } else if operator == SINGLE_MAP_IN_PLACE {
             quote! {
                 .map_in_place(|row: &mut #source_type| {
                     let #source_pattern = *row;
                     *row = #head_tuple;
                 })
             }
-        } else if identity && !tuple_predicate {
-            let braced = conditions.iter().any(|condition| {
-                matches!(
-                    condition,
-                    BodyItem::Condition(Expr::Binary(comparison))
-                        if !matches!(comparison.right.as_ref(), Expr::Lit(_))
-                ) || matches!(condition, BodyItem::Condition(expression) if !matches!(expression, Expr::Binary(_)))
-            });
-            if braced {
-                quote! {
-                    .filter(|&#source_pattern: &#source_type| { #(#predicates)&&* })
-                }
-            } else {
-                quote! {
-                    .filter(|&#source_pattern: &#source_type| #(#predicates)&&*)
-                }
+        } else if operator == SINGLE_FILTER {
+            quote! {
+                .filter(|&#source_pattern: &#source_type| #(#predicates)&&*)
+            }
+        } else if operator == SINGLE_FILTER_BLOCK {
+            quote! {
+                .filter(|&#source_pattern: &#source_type| { #(#predicates)&&* })
             }
         } else {
             let map = if predicates.is_empty() {
@@ -811,8 +701,7 @@ impl HirProgram {
                 })
             }
         };
-
-        let binding = if initialized.contains(&head.relation) {
+        let binding = if physical.target_initialized() {
             quote! {
                 let #target_collection = #target_collection
                     .concatenate([#transform.clone()])
@@ -834,168 +723,27 @@ impl HirProgram {
         ))
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn emit_flowlog_direct_aggregate(
-        &self,
-        rule_index: usize,
-        initialized: &BTreeSet<RelationId>,
-    ) -> Option<(RelationId, TokenStream)> {
-        let rule = &self.rules[rule_index];
-        let [head] = rule.heads.as_slice() else {
-            return None;
-        };
-        let [BodyItem::Aggregate(aggregate)] = rule.body.as_slice() else {
-            return None;
-        };
-        let source_relation = &self.relations[aggregate.source.relation.0];
-        let target_relation = &self.relations[head.relation.0];
-        if !initialized.contains(&aggregate.source.relation)
-            || head.arguments.len() != target_relation.columns.len()
-            || aggregate.arguments.len() != 1
-        {
+    fn render_flowlog_direct_aggregate(plan: &RulePlan) -> Option<(RelationId, TokenStream)> {
+        let root = plan.root();
+        if plan.graph().nodes().get(root.index())?.operator() != DIRECT_AGGREGATE {
             return None;
         }
+        let physical = plan
+            .graph()
+            .facts()
+            .relation::<DirectAggregatePlan>()
+            .iter()
+            .find(|physical| physical.node() == root)?;
+        let aggregate = physical.aggregate();
+        let head = physical.head();
+        let source_relation = physical.source_relation();
+        let target_relation = physical.target_relation();
         let operator = aggregate.operator.to_string();
-        if !matches!(operator.as_str(), "min" | "max" | "sum" | "mean" | "count") {
-            return None;
-        }
-        let aggregate_positions = head
-            .arguments
-            .iter()
-            .positions(|argument| expression_mentions_ident(argument, &aggregate.binding))
-            .collect_vec();
-        let [aggregate_position] = aggregate_positions.as_slice() else {
-            return None;
-        };
-        if *aggregate_position + 1 != head.arguments.len() {
-            return None;
-        }
-
-        let rows = row_bindings_flowlog(source_relation);
-        let mut bindings = BTreeMap::<String, usize>::new();
-        let mut pattern = Vec::with_capacity(aggregate.source.arguments.len());
-        for (index, argument) in aggregate.source.arguments.iter().enumerate() {
-            if matches!(argument, Expr::Infer(_)) {
-                pattern.push(format_ident!("_x{index}"));
-                continue;
-            }
-            let name = variable_name(argument)?;
-            if bindings.insert(name, index).is_some() {
-                return None;
-            }
-            pattern.push(rows[index].clone());
-        }
-
-        let mut transformation_values = head.arguments[..*aggregate_position].to_vec();
-        transformation_values.push(aggregate.arguments[0].clone());
-        let value_fingerprints = transformation_values
-            .iter()
-            .zip(&target_relation.columns)
-            .map(|(argument, column_type)| flowlog_arithmetic(argument, &bindings, column_type))
-            .collect::<Option<Vec<_>>>()?;
-        let fingerprint = flowlog_fp::unary_expressions(
-            "row_to_row",
-            flowlog_fp::relation(&flowlog_relation_fingerprint_name(source_relation)),
-            Vec::new(),
-            value_fingerprints,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
-        let transform = format_ident!("t_{fingerprint}");
+        let transform = format_ident!("t_{}", physical.fingerprint());
         let source_collection = collection_ident(source_relation);
         let target_collection = collection_ident(target_relation);
-        let source_type = tuple_type(source_relation);
-        let source_pattern = tuple(pattern.into_iter().map(|ident| quote! { #ident }));
-        let fields = transformation_values
-            .iter()
-            .map(|argument| emit_flowlog_expression(argument, &bindings, &rows))
-            .collect::<Option<Vec<_>>>()?;
-        let transformed_tuple = tuple(fields);
-        let source_variables = aggregate
-            .source
-            .arguments
-            .iter()
-            .map(dereferenced_variable_name)
-            .collect::<Option<Vec<_>>>();
-        let transformed_variables = transformation_values
-            .iter()
-            .map(dereferenced_variable_name)
-            .collect::<Option<Vec<_>>>();
-        let operation = if source_variables.is_some()
-            && source_variables == transformed_variables
-            && source_relation.columns.len() == target_relation.columns.len()
-        {
-            TokenStream::new()
-        } else {
-            quote! {
-                .flat_map(|#source_pattern: #source_type| {
-                    std::iter::once(#transformed_tuple)
-                })
-            }
-        };
-
-        let width = target_relation.columns.len();
-        let input_pattern = tuple((0..width).map(|index| {
-            if operator == "count" && index + 1 == width {
-                quote! { _ }
-            } else {
-                let ident = format_ident!("x{index}");
-                quote! { #ident }
-            }
-        }));
-        let group_width = width - 1;
-        let key = tuple((0..group_width).map(|index| {
-            let ident = format_ident!("x{index}");
-            quote! { #ident }
-        }));
-        let value = if operator == "count" {
-            quote! { 1 }
-        } else {
-            let value = format_ident!("x{group_width}");
-            quote! { #value }
-        };
-        let aggregate_type = flowlog_data_type(&target_relation.columns[*aggregate_position]);
-        let semigroup = match (operator.as_str(), aggregate_type) {
-            ("min", Some(flowlog_fp::DataType::Int64)) => format_ident!("MinI64"),
-            ("min", _) => format_ident!("MinI32"),
-            ("max", Some(flowlog_fp::DataType::Int64)) => format_ident!("MaxI64"),
-            ("max", _) => format_ident!("MaxI32"),
-            ("sum", Some(flowlog_fp::DataType::Int64)) => {
-                format_ident!("SumI64")
-            }
-            ("sum" | "count", _) => format_ident!("SumI32"),
-            ("mean", _) => format_ident!("AvgI32"),
-            _ => return None,
-        };
-        let update_guard = match operator.as_str() {
-            "min" => quote! { new_val < *current },
-            "max" => quote! { new_val > *current },
-            "sum" | "count" | "mean" => quote! { new_val != *current },
-            _ => return None,
-        };
-        let output_key_pattern = if group_width == 0 {
-            quote! { _key }
-        } else {
-            tuple((0..group_width).map(|index| {
-                let ident = format_ident!("k{index}");
-                quote! { #ident }
-            }))
-        };
-        let aggregate_value = if operator == "mean" {
-            quote! { agg_val.avg() }
-        } else {
-            quote! { agg_val.value }
-        };
-        let output_row = tuple(
-            (0..group_width)
-                .map(|index| {
-                    let ident = format_ident!("k{index}");
-                    quote! { #ident }
-                })
-                .chain(std::iter::once(aggregate_value)),
-        );
-        let initial_binding = if initialized.contains(&head.relation) {
+        let operation = render_direct_aggregate_projection(physical)?;
+        let initial_binding = if physical.target_initialized() {
             quote! {
                 let #target_collection = #target_collection
                     .concatenate([#transform.clone()])
@@ -1006,6 +754,11 @@ impl HirProgram {
                 let #target_collection = #transform.clone().consolidate();
             }
         };
+        let aggregation = render_direct_aggregate_reduction(
+            target_relation,
+            physical.aggregate_position(),
+            &operator,
+        )?;
 
         Some((
             head.relation,
@@ -1015,26 +768,7 @@ impl HirProgram {
                     #operation;
                 #initial_binding
                 let #target_collection = #target_collection
-                    .inner
-                    .map(move |(#input_pattern, t, _)| {
-                        let key = #key;
-                        (key, t, #semigroup::new(#value))
-                    })
-                    .as_collection()
-                    .threshold_semigroup(|_k, &new_val, current_val| {
-                        match current_val {
-                            Some(current) if #update_guard => Some(new_val),
-                            Some(_) => None,
-                            None if !new_val.is_zero() => Some(new_val),
-                            None => None,
-                        }
-                    })
-                    .inner
-                    .map(move |(#output_key_pattern, t, agg_val)| {
-                        let row = #output_row;
-                        (row, t, SEMIRING_ONE)
-                    })
-                    .as_collection();
+                    #aggregation;
             },
         ))
     }
@@ -2489,6 +2223,7 @@ impl HirProgram {
         &self,
         scc: &Scc,
         initialized: &mut BTreeSet<RelationId>,
+        catalog: &PlanningCatalog,
         registry: &Registry,
         context: &mut CompilerContext,
     ) -> Result<TokenStream> {
@@ -2564,13 +2299,18 @@ impl HirProgram {
         let mut derivations = BTreeMap::<RelationId, Vec<TokenStream>>::new();
         for &rule_index in &scc.rules {
             let rule = &self.rules[rule_index];
-            for head in &rule.heads {
+            for (head_index, head) in rule.heads.iter().enumerate() {
                 derivations
                     .entry(head.relation)
                     .or_default()
                     .push(self.emit_rule_expression(
-                        rule,
-                        head,
+                        RuleRequest::new(
+                            catalog.clone(),
+                            rule_index,
+                            head_index,
+                            initialized.clone(),
+                            true,
+                        ),
                         ScopeMode::Inner {
                             recursive: &recursive_relations,
                         },
@@ -3688,14 +3428,16 @@ impl HirProgram {
 
     fn emit_rule_expression(
         &self,
-        rule: &Rule,
-        head: &Atom,
+        request: RuleRequest,
         mode: ScopeMode,
         registry: &Registry,
         context: &mut CompilerContext,
     ) -> Result<TokenStream> {
-        let plan =
-            registry.perform::<PlanRule>(context, RuleRequest::new(rule.clone(), head.clone()))?;
+        let plan = registry.perform::<PlanRule>(context, request)?;
+        self.render_rule_plan(&plan, mode)
+    }
+
+    fn render_rule_plan(&self, plan: &RulePlan, mode: ScopeMode) -> Result<TokenStream> {
         let mut rendered = None;
 
         for node in plan.graph().nodes() {
@@ -4304,6 +4046,185 @@ impl HirProgram {
     }
 }
 
+struct SingleRenderInput {
+    rows: Vec<Ident>,
+    source_pattern: TokenStream,
+    predicates: Vec<TokenStream>,
+}
+
+fn render_single_input(physical: &SingleAtomPlan) -> Option<SingleRenderInput> {
+    let source = physical.source();
+    let relation = physical.source_relation();
+    let bindings = physical.bindings();
+    let rows = row_bindings_flowlog(relation);
+    let mut predicates = Vec::new();
+    let mut pattern = Vec::with_capacity(source.arguments.len());
+    for (index, (argument, column_type)) in
+        source.arguments.iter().zip(&relation.columns).enumerate()
+    {
+        let row = &rows[index];
+        match argument {
+            Expr::Infer(_) => pattern.push(format_ident!("_x{index}")),
+            _ if expression_variable_ident(argument).is_some() => {
+                let name = variable_name(argument)?;
+                let previous = *bindings.get(&name)?;
+                if previous != index {
+                    let previous_row = &rows[previous];
+                    predicates.push(quote! { #previous_row == #row });
+                }
+                pattern.push(row.clone());
+            }
+            Expr::Lit(_) => {
+                let literal = emit_flowlog_literal(argument, column_type)?;
+                predicates.push(quote! { #row == #literal });
+                pattern.push(row.clone());
+            }
+            _ => return None,
+        }
+    }
+    for condition in physical.conditions() {
+        let comparison: syn::ExprBinary = match condition {
+            Expr::Binary(comparison) => comparison.clone(),
+            Expr::Call(_) => syn::parse_quote! { #condition == true },
+            Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Not(_)) => {
+                let inner = &unary.expr;
+                syn::parse_quote! { #inner == false }
+            }
+            _ => return None,
+        };
+        let left = emit_flowlog_expression(&comparison.left, bindings, &rows)?;
+        let right = emit_flowlog_expression(&comparison.right, bindings, &rows)?;
+        let operator = &comparison.op;
+        predicates.push(quote! { (#left) #operator (#right) });
+    }
+    Some(SingleRenderInput {
+        rows,
+        source_pattern: tuple(pattern.into_iter().map(|ident| quote! { #ident })),
+        predicates,
+    })
+}
+
+fn render_direct_aggregate_projection(physical: &DirectAggregatePlan) -> Option<TokenStream> {
+    if physical.identity_transform() {
+        return Some(TokenStream::new());
+    }
+    let aggregate = physical.aggregate();
+    let source_relation = physical.source_relation();
+    let rows = row_bindings_flowlog(source_relation);
+    let pattern = aggregate
+        .source
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(index, argument)| {
+            if matches!(argument, Expr::Infer(_)) {
+                format_ident!("_x{index}")
+            } else {
+                rows[index].clone()
+            }
+        });
+    let source_pattern = tuple(pattern.map(|ident| quote! { #ident }));
+    let source_type = tuple_type(source_relation);
+    let fields = physical
+        .transformation_values()
+        .iter()
+        .map(|argument| emit_flowlog_expression(argument, physical.bindings(), &rows))
+        .collect::<Option<Vec<_>>>()?;
+    let transformed_tuple = tuple(fields);
+    Some(quote! {
+        .flat_map(|#source_pattern: #source_type| {
+            std::iter::once(#transformed_tuple)
+        })
+    })
+}
+
+fn render_direct_aggregate_reduction(
+    target_relation: &Relation,
+    aggregate_position: usize,
+    operator: &str,
+) -> Option<TokenStream> {
+    let width = target_relation.columns.len();
+    let group_width = width - 1;
+    let input_pattern = tuple((0..width).map(|index| {
+        if operator == "count" && index + 1 == width {
+            quote! { _ }
+        } else {
+            let ident = format_ident!("x{index}");
+            quote! { #ident }
+        }
+    }));
+    let key = tuple((0..group_width).map(|index| {
+        let ident = format_ident!("x{index}");
+        quote! { #ident }
+    }));
+    let value = if operator == "count" {
+        quote! { 1 }
+    } else {
+        let value = format_ident!("x{group_width}");
+        quote! { #value }
+    };
+    let aggregate_type = flowlog_data_type(&target_relation.columns[aggregate_position]);
+    let semigroup = match (operator, aggregate_type) {
+        ("min", Some(flowlog_fp::DataType::Int64)) => format_ident!("MinI64"),
+        ("min", _) => format_ident!("MinI32"),
+        ("max", Some(flowlog_fp::DataType::Int64)) => format_ident!("MaxI64"),
+        ("max", _) => format_ident!("MaxI32"),
+        ("sum", Some(flowlog_fp::DataType::Int64)) => format_ident!("SumI64"),
+        ("sum" | "count", _) => format_ident!("SumI32"),
+        ("mean", _) => format_ident!("AvgI32"),
+        _ => return None,
+    };
+    let update_guard = match operator {
+        "min" => quote! { new_val < *current },
+        "max" => quote! { new_val > *current },
+        "sum" | "count" | "mean" => quote! { new_val != *current },
+        _ => return None,
+    };
+    let output_key_pattern = if group_width == 0 {
+        quote! { _key }
+    } else {
+        tuple((0..group_width).map(|index| {
+            let ident = format_ident!("k{index}");
+            quote! { #ident }
+        }))
+    };
+    let aggregate_value = if operator == "mean" {
+        quote! { agg_val.avg() }
+    } else {
+        quote! { agg_val.value }
+    };
+    let output_row = tuple(
+        (0..group_width)
+            .map(|index| {
+                let ident = format_ident!("k{index}");
+                quote! { #ident }
+            })
+            .chain(std::iter::once(aggregate_value)),
+    );
+    Some(quote! {
+        .inner
+        .map(move |(#input_pattern, t, _)| {
+            let key = #key;
+            (key, t, #semigroup::new(#value))
+        })
+        .as_collection()
+        .threshold_semigroup(|_k, &new_val, current_val| {
+            match current_val {
+                Some(current) if #update_guard => Some(new_val),
+                Some(_) => None,
+                None if !new_val.is_zero() => Some(new_val),
+                None => None,
+            }
+        })
+        .inner
+        .map(move |(#output_key_pattern, t, agg_val)| {
+            let row = #output_row;
+            (row, t, SEMIRING_ONE)
+        })
+        .as_collection()
+    })
+}
+
 struct RenderedEnvironment {
     expression: TokenStream,
     bindings: BindingMap,
@@ -4496,308 +4417,6 @@ impl ScopeMode<'_> {
     }
 }
 
-fn variable_name(expression: &Expr) -> Option<String> {
-    expression_variable_ident(expression).map(|ident| ident.to_string())
-}
-
-fn expression_variables(expression: &Expr) -> Vec<String> {
-    struct Variables(Vec<String>);
-    impl syn::visit::Visit<'_> for Variables {
-        fn visit_expr_path(&mut self, path: &syn::ExprPath) {
-            if path.qself.is_none()
-                && path.path.leading_colon.is_none()
-                && path.path.segments.len() == 1
-            {
-                self.0.push(path.path.segments[0].ident.to_string());
-            }
-        }
-
-        fn visit_expr_call(&mut self, call: &syn::ExprCall) {
-            for argument in &call.args {
-                syn::visit::Visit::visit_expr(self, argument);
-            }
-        }
-    }
-    let mut variables = Variables(Vec::new());
-    syn::visit::Visit::visit_expr(&mut variables, expression);
-    variables.0
-}
-
-fn binary_expression_variables(expression: &syn::ExprBinary) -> BTreeSet<String> {
-    expression_variables(&expression.left)
-        .into_iter()
-        .chain(expression_variables(&expression.right))
-        .collect()
-}
-
-fn flowlog_variable(argument: TransformationArgument) -> flowlog_fp::ArithmeticArgument {
-    flowlog_fp::ArithmeticArgument {
-        init: flowlog_fp::FactorArgument::Var(argument),
-        rest: Vec::new(),
-    }
-}
-
-fn flowlog_arithmetic(
-    expression: &Expr,
-    bindings: &BTreeMap<String, usize>,
-    data_type: &syn::Type,
-) -> Option<flowlog_fp::ArithmeticArgument> {
-    flowlog_arithmetic_with(
-        expression,
-        &|name| {
-            bindings
-                .get(name)
-                .map(|&index| TransformationArgument::KV((false, index)))
-        },
-        data_type,
-    )
-}
-
-fn flowlog_arithmetic_with(
-    expression: &Expr,
-    resolve: &impl Fn(&str) -> Option<TransformationArgument>,
-    data_type: &syn::Type,
-) -> Option<flowlog_fp::ArithmeticArgument> {
-    if let Expr::Paren(paren) = expression {
-        return flowlog_arithmetic_with(&paren.expr, resolve, data_type);
-    }
-    if let Expr::Binary(binary) = expression {
-        let mut left = flowlog_arithmetic_with(&binary.left, resolve, data_type)?;
-        left.rest.push((
-            flowlog_arithmetic_operator(&binary.op)?,
-            flowlog_factor_with(&binary.right, resolve, data_type)?,
-        ));
-        return Some(left);
-    }
-    Some(flowlog_fp::ArithmeticArgument {
-        init: flowlog_factor_with(expression, resolve, data_type)?,
-        rest: Vec::new(),
-    })
-}
-
-fn flowlog_factor_with(
-    expression: &Expr,
-    resolve: &impl Fn(&str) -> Option<TransformationArgument>,
-    data_type: &syn::Type,
-) -> Option<flowlog_fp::FactorArgument> {
-    match expression {
-        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => {
-            flowlog_factor_with(&unary.expr, resolve, data_type)
-        }
-        Expr::Path(_) => Some(flowlog_fp::FactorArgument::Var(resolve(&variable_name(
-            expression,
-        )?)?)),
-        Expr::Lit(_) => Some(flowlog_fp::FactorArgument::Const(flowlog_constant(
-            expression, data_type,
-        )?)),
-        Expr::Paren(paren) => Some(flowlog_fp::FactorArgument::Group(Box::new(
-            flowlog_arithmetic_with(&paren.expr, resolve, data_type)?,
-        ))),
-        Expr::Tuple(tuple) => {
-            let syn::Type::Tuple(types) = data_type else {
-                return None;
-            };
-            Some(flowlog_fp::FactorArgument::Tuple {
-                fields: tuple
-                    .elems
-                    .iter()
-                    .zip(&types.elems)
-                    .map(|(field, data_type)| flowlog_arithmetic_with(field, resolve, data_type))
-                    .collect::<Option<Vec<_>>>()?,
-            })
-        }
-        Expr::Field(field) => {
-            let base_type = match field.base.as_ref() {
-                Expr::Tuple(tuple) => {
-                    let fields = std::iter::repeat_n(data_type.clone(), tuple.elems.len());
-                    syn::parse_quote! { (#(#fields,)*) }
-                }
-                _ => data_type.clone(),
-            };
-            Some(flowlog_fp::FactorArgument::TupleProj {
-                tuple: Box::new(flowlog_arithmetic_with(&field.base, resolve, &base_type)?),
-                index: match &field.member {
-                    syn::Member::Unnamed(index) => index.index as usize,
-                    syn::Member::Named(_) => return None,
-                },
-            })
-        }
-        Expr::Call(call) => {
-            let Expr::Path(function) = call.func.as_ref() else {
-                return None;
-            };
-            if function.qself.is_some()
-                || function.path.leading_colon.is_some()
-                || function.path.segments.len() > 1
-                    && function.path.segments.first()?.ident != "udf"
-            {
-                return None;
-            }
-            if function.path.segments.last()?.ident == "OrderedFloat" {
-                let mut arguments = call.args.iter();
-                let argument = arguments.next()?;
-                if arguments.next().is_some() {
-                    return None;
-                }
-                return Some(flowlog_fp::FactorArgument::Const(flowlog_constant(
-                    argument, data_type,
-                )?));
-            }
-            let name = function.path.segments.last()?.ident.to_string();
-            let builtin = match name.as_str() {
-                "strlen" => Some(flowlog_fp::BuiltinOperator::Strlen),
-                "cat" => Some(flowlog_fp::BuiltinOperator::Cat),
-                _ => None,
-            };
-            if let Some(op) = builtin {
-                return Some(flowlog_fp::FactorArgument::Builtin {
-                    op,
-                    args: call
-                        .args
-                        .iter()
-                        .map(|argument| flowlog_arithmetic_with(argument, resolve, data_type))
-                        .collect::<Option<Vec<_>>>()?,
-                });
-            }
-            Some(flowlog_fp::FactorArgument::FnCall {
-                name,
-                args: call
-                    .args
-                    .iter()
-                    .map(|argument| flowlog_arithmetic_with(argument, resolve, data_type))
-                    .collect::<Option<Vec<_>>>()?,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn flowlog_arithmetic_operator(operator: &syn::BinOp) -> Option<flowlog_fp::ArithmeticOperator> {
-    match operator {
-        syn::BinOp::Add(_) => Some(flowlog_fp::ArithmeticOperator::Plus),
-        syn::BinOp::Sub(_) => Some(flowlog_fp::ArithmeticOperator::Minus),
-        syn::BinOp::Mul(_) => Some(flowlog_fp::ArithmeticOperator::Multiply),
-        syn::BinOp::Div(_) => Some(flowlog_fp::ArithmeticOperator::Divide),
-        syn::BinOp::Rem(_) => Some(flowlog_fp::ArithmeticOperator::Modulo),
-        _ => None,
-    }
-}
-
-fn flowlog_comparison_operator(operator: &syn::BinOp) -> Option<flowlog_fp::ComparisonOperator> {
-    match operator {
-        syn::BinOp::Eq(_) => Some(flowlog_fp::ComparisonOperator::Equal),
-        syn::BinOp::Ne(_) => Some(flowlog_fp::ComparisonOperator::NotEqual),
-        syn::BinOp::Gt(_) => Some(flowlog_fp::ComparisonOperator::GreaterThan),
-        syn::BinOp::Ge(_) => Some(flowlog_fp::ComparisonOperator::GreaterEqualThan),
-        syn::BinOp::Lt(_) => Some(flowlog_fp::ComparisonOperator::LessThan),
-        syn::BinOp::Le(_) => Some(flowlog_fp::ComparisonOperator::LessEqualThan),
-        _ => None,
-    }
-}
-
-fn flowlog_constant(expression: &Expr, data_type: &syn::Type) -> Option<flowlog_fp::Constant> {
-    let Expr::Lit(literal) = expression else {
-        return None;
-    };
-    let text = match &literal.lit {
-        syn::Lit::Int(value) => value.base10_digits().to_owned(),
-        syn::Lit::Float(value) => value.base10_digits().to_owned(),
-        syn::Lit::Str(value) => value.value(),
-        syn::Lit::Bool(value) => {
-            if value.value {
-                "True".to_owned()
-            } else {
-                "False".to_owned()
-            }
-        }
-        _ => return None,
-    };
-    Some(flowlog_fp::Constant {
-        text,
-        ty: flowlog_data_type(data_type)?,
-    })
-}
-
-fn flowlog_data_type(data_type: &syn::Type) -> Option<flowlog_fp::DataType> {
-    match data_type {
-        syn::Type::Path(path) => {
-            let segment = path.path.segments.last()?;
-            match segment.ident.to_string().as_str() {
-                "i8" => Some(flowlog_fp::DataType::Int8),
-                "i16" => Some(flowlog_fp::DataType::Int16),
-                "i32" => Some(flowlog_fp::DataType::Int32),
-                "i64" => Some(flowlog_fp::DataType::Int64),
-                "u8" => Some(flowlog_fp::DataType::UInt8),
-                "u16" => Some(flowlog_fp::DataType::UInt16),
-                "u32" => Some(flowlog_fp::DataType::UInt32),
-                "u64" => Some(flowlog_fp::DataType::UInt64),
-                "f32" => Some(flowlog_fp::DataType::Float32),
-                "f64" => Some(flowlog_fp::DataType::Float64),
-                "String" => Some(flowlog_fp::DataType::String),
-                "bool" => Some(flowlog_fp::DataType::Bool),
-                "OrderedFloat" => {
-                    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
-                        return None;
-                    };
-                    let syn::GenericArgument::Type(inner) = arguments.args.first()? else {
-                        return None;
-                    };
-                    flowlog_data_type(inner)
-                }
-                _ => None,
-            }
-        }
-        syn::Type::Tuple(tuple) => Some(flowlog_fp::DataType::FixedTuple(
-            tuple
-                .elems
-                .iter()
-                .map(flowlog_data_type)
-                .collect::<Option<Vec<_>>>()?,
-        )),
-        _ => None,
-    }
-}
-
-fn expression_type(
-    expression: &Expr,
-    bindings: &BTreeMap<String, usize>,
-    relation: &Relation,
-) -> Option<syn::Type> {
-    if let Some(name) = dereferenced_variable_name(expression)
-        && let Some(index) = bindings.get(&name)
-    {
-        return relation.columns.get(*index).cloned();
-    }
-    match expression {
-        Expr::Binary(binary) => expression_type(&binary.left, bindings, relation)
-            .or_else(|| expression_type(&binary.right, bindings, relation)),
-        Expr::Paren(paren) => expression_type(&paren.expr, bindings, relation),
-        Expr::Unary(unary) => expression_type(&unary.expr, bindings, relation),
-        Expr::Tuple(tuple) => {
-            let fields = tuple
-                .elems
-                .iter()
-                .map(|field| expression_type(field, bindings, relation))
-                .collect::<Option<Vec<_>>>()?;
-            Some(syn::parse_quote! { (#(#fields,)*) })
-        }
-        Expr::Field(field) => {
-            let syn::Type::Tuple(tuple) = expression_type(&field.base, bindings, relation)? else {
-                return None;
-            };
-            let syn::Member::Unnamed(index) = &field.member else {
-                return None;
-            };
-            tuple.elems.get(index.index as usize).cloned()
-        }
-        Expr::Call(call) => call
-            .args
-            .iter()
-            .find_map(|argument| expression_type(argument, bindings, relation)),
-        _ => None,
-    }
-}
-
 fn emit_flowlog_expression(
     expression: &Expr,
     bindings: &BTreeMap<String, usize>,
@@ -4897,20 +4516,6 @@ fn emit_flowlog_expression_with(
     }
 }
 
-fn flowlog_copy_type(data_type: &syn::Type) -> bool {
-    matches!(
-        data_type,
-        syn::Type::Path(path)
-            if matches!(
-                path.path.segments.last().map(|segment| segment.ident.to_string()).as_deref(),
-                Some(
-                    "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
-                        | "f32" | "f64" | "bool" | "OrderedFloat"
-                )
-            )
-    )
-}
-
 fn emit_flowlog_literal(expression: &Expr, data_type: &syn::Type) -> Option<TokenStream> {
     let Expr::Lit(literal) = expression else {
         return None;
@@ -4932,70 +4537,6 @@ fn emit_flowlog_literal(expression: &Expr, data_type: &syn::Type) -> Option<Toke
         }
         _ => None,
     }
-}
-
-fn dereferenced_variable_name(expression: &Expr) -> Option<String> {
-    match expression {
-        Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Deref(_)) => variable_name(&unary.expr),
-        _ => variable_name(expression),
-    }
-}
-
-fn expression_variable_ident(expression: &Expr) -> Option<Ident> {
-    match expression {
-        Expr::Path(path)
-            if path.qself.is_none()
-                && path.path.leading_colon.is_none()
-                && path.path.segments.len() == 1 =>
-        {
-            Some(path.path.segments[0].ident.clone())
-        }
-        _ => None,
-    }
-}
-
-fn expression_mentions_ident(expression: &Expr, searched: &Ident) -> bool {
-    struct Finder<'a> {
-        searched: &'a Ident,
-        found: bool,
-    }
-
-    impl syn::visit::Visit<'_> for Finder<'_> {
-        fn visit_expr_path(&mut self, path: &syn::ExprPath) {
-            if path.qself.is_none()
-                && path.path.leading_colon.is_none()
-                && path.path.segments.len() == 1
-                && path.path.segments[0].ident == *self.searched
-            {
-                self.found = true;
-            }
-            syn::visit::visit_expr_path(self, path);
-        }
-    }
-
-    let mut finder = Finder {
-        searched,
-        found: false,
-    };
-    syn::visit::Visit::visit_expr(&mut finder, expression);
-    finder.found
-}
-
-fn expression_contains_tuple(expression: &Expr) -> bool {
-    struct Finder(bool);
-    impl syn::visit::Visit<'_> for Finder {
-        fn visit_expr_tuple(&mut self, tuple: &syn::ExprTuple) {
-            self.0 = true;
-            syn::visit::visit_expr_tuple(self, tuple);
-        }
-        fn visit_expr_field(&mut self, field: &syn::ExprField) {
-            self.0 = true;
-            syn::visit::visit_expr_field(self, field);
-        }
-    }
-    let mut finder = Finder(false);
-    syn::visit::Visit::visit_expr(&mut finder, expression);
-    finder.0
 }
 
 fn is_variable_or_wildcard(expression: &Expr) -> bool {

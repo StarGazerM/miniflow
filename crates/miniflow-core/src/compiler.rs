@@ -163,14 +163,15 @@ impl Registry {
 
     /// Install an around-handler for an operation.
     ///
-    /// Handlers execute in installation order. Each handler receives an
-    /// affine continuation for the remainder of the same operation.
+    /// A newly installed handler wraps handlers already present. Each handler
+    /// receives an affine continuation for the remainder of the same
+    /// operation.
     pub fn around<O, F>(&mut self, handler: F)
     where
         O: Operation,
         F: for<'a> Fn(&mut CompilerContext, O::Input, Next<'a, O>) -> Result<O::Output> + 'static,
     {
-        self.chain_mut::<O>().around.push(Box::new(handler));
+        self.chain_mut::<O>().around.insert(0, Box::new(handler));
     }
 
     /// Perform a registered compiler operation.

@@ -17,20 +17,20 @@ fn handlers_compose_in_installation_order() {
     let trace = Rc::new(RefCell::new(Vec::new()));
     let mut registry = Registry::default();
 
-    let outer_trace = Rc::clone(&trace);
-    registry.around::<Adjust, _>(move |context, input, next| {
-        outer_trace.borrow_mut().push("outer-before");
-        let output = next.call(context, input + 1)?;
-        outer_trace.borrow_mut().push("outer-after");
-        Ok(output + 10)
-    });
-
     let inner_trace = Rc::clone(&trace);
     registry.around::<Adjust, _>(move |context, input, next| {
         inner_trace.borrow_mut().push("inner-before");
         let output = next.call(context, input * 2)?;
         inner_trace.borrow_mut().push("inner-after");
         Ok(output + 100)
+    });
+
+    let outer_trace = Rc::clone(&trace);
+    registry.around::<Adjust, _>(move |context, input, next| {
+        outer_trace.borrow_mut().push("outer-before");
+        let output = next.call(context, input + 1)?;
+        outer_trace.borrow_mut().push("outer-after");
+        Ok(output + 10)
     });
 
     registry

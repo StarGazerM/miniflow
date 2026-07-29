@@ -14,6 +14,14 @@ use crate::syntax;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RelationId(pub(crate) usize);
 
+impl RelationId {
+    /// Return this relation's zero-based position in its planning catalog.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
+
 /// A resolved relation.
 #[derive(Clone, Debug)]
 pub struct Relation {

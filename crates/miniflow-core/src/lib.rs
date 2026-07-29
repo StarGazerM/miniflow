@@ -6,7 +6,9 @@
 mod canonical;
 mod codegen;
 pub mod compiler;
+mod flowlog_analysis;
 mod flowlog_fp;
+pub mod flowlog_plan;
 pub mod hir;
 mod pipeline;
 pub mod plan;
@@ -18,7 +20,7 @@ use syn::Result;
 
 pub use canonical::extract_dataflow_core;
 pub use hir::HirProgram;
-pub use pipeline::{Compiler, PlanRule, RuleRequest};
+pub use pipeline::{Compiler, PlanRule, PlanningCatalog, RuleRequest};
 pub use syntax::Program;
 
 /// Parse and validate an embedded `MiniFlow` program.
