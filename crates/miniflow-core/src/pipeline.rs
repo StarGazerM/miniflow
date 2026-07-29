@@ -271,7 +271,19 @@ impl Compiler {
     }
 
     pub(crate) fn emit_hir(&mut self, hir: &HirProgram) -> Result<TokenStream> {
-        hir.emit_with(&self.registry, &mut self.context)
+        crate::program_plan::ProgramPlan::build(hir, &self.registry, &mut self.context)?.render()
+    }
+}
+
+impl HirProgram {
+    /// Plan and emit the complete embedded program.
+    ///
+    /// # Errors
+    ///
+    /// Returns a compiler diagnostic when the program cannot be planned or
+    /// rendered by the standard compiler.
+    pub fn emit(&self) -> Result<TokenStream> {
+        Compiler::new()?.emit_hir(self)
     }
 }
 

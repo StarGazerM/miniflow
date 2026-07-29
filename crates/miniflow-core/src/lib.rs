@@ -4,8 +4,8 @@
 //! parity tests exercise exactly the compiler invoked by the public macros.
 
 mod canonical;
-mod codegen;
 pub mod compiler;
+mod dd_render;
 mod flowlog_analysis;
 mod flowlog_fp;
 pub mod flowlog_plan;
