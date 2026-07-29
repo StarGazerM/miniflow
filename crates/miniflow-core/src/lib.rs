@@ -12,6 +12,7 @@ pub mod flowlog_plan;
 pub mod hir;
 mod pipeline;
 pub mod plan;
+pub mod program_plan;
 pub mod rule_plan;
 pub mod scc_plan;
 mod syntax;

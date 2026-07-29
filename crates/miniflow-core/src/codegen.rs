@@ -19,14 +19,17 @@ use crate::flowlog_plan::{
     SingleAtomPlan, SymmetricClosurePlan, THREE_ATOM_JOIN, TUPLE_EQUIJOIN, ThreeAtomJoinPlan,
     TupleEquijoinPlan, UNARY_ANTIJOIN, UnaryAntijoinPlan, UnaryAntijoinStage,
 };
-use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId, Scc};
-use crate::pipeline::{PlanRule, PlanScc, PlanningCatalog, RuleRequest, SccRequest};
+use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId};
 use crate::plan::OperatorKey;
+use crate::program_plan::{
+    NONRECURSIVE_REGION, NonRecursiveRegion, ProgramPlan, RECURSIVE_REGION, RecursiveRegion,
+    RegionPlan, ScheduledRule,
+};
 use crate::rule_plan::{
     AGGREGATE, ANTIJOIN, Binding, BindingMap, CONDITION, FACT, GENERATOR, IF_LET, JOIN, LET,
     PROJECT, RulePlan, RuleStep, SOURCE,
 };
-use crate::scc_plan::{GENERIC_RECURSIVE_SCC, GenericRecursiveScc, SccPlan, SccRulePlan};
+use crate::scc_plan::{GENERIC_RECURSIVE_SCC, GenericRecursiveScc, SccPlan};
 
 struct NamedTransformation {
     ident: Ident,
@@ -77,11 +80,17 @@ impl HirProgram {
         registry: &Registry,
         context: &mut CompilerContext,
     ) -> Result<TokenStream> {
-        let declarations = self.emit_declarations();
-        let name = &self.signature.name;
-        let generics = &self.signature.generics;
+        ProgramPlan::build(self, registry, context)?.render()
+    }
+}
+
+impl ProgramPlan {
+    fn render(&self) -> Result<TokenStream> {
+        let declarations = self.render_declarations();
+        let name = &self.signature().name;
+        let generics = &self.signature().generics;
         let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
-        let run = self.emit_run(registry, context)?;
+        let run = self.render_run()?;
 
         Ok(quote! {
             #declarations
@@ -92,58 +101,59 @@ impl HirProgram {
         })
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn emit_run(&self, registry: &Registry, context: &mut CompilerContext) -> Result<TokenStream> {
-        let runtime_crate = &self.runtime_crate;
-        let flowlog_batch = self.flowlog_batch_enabled();
-        let mut inline_facts = BTreeMap::<RelationId, Vec<TokenStream>>::new();
-        for rule in self.rules.iter().filter(|rule| rule.body.is_empty()) {
-            for head in &rule.heads {
-                inline_facts
-                    .entry(head.relation)
-                    .or_default()
-                    .push(emit_head_tuple_tokens(head, &BTreeMap::new())?);
+    fn render_declarations(&self) -> TokenStream {
+        let signature = self.signature();
+        let visibility = &signature.visibility;
+        let name = &signature.name;
+        let generics = &signature.generics;
+        let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
+        let field_names = self.relations().iter().map(|relation| &relation.name);
+        let fields = self.relations().iter().map(|relation| {
+            let relation_name = &relation.name;
+            let columns = &relation.columns;
+            quote! {
+                pub #relation_name: ::std::vec::Vec<(#(#columns,)*)>
+            }
+        });
+
+        quote! {
+            #[allow(clippy::struct_field_names)]
+            #visibility struct #name #generics {
+                #(#fields,)*
+            }
+
+            impl #impl_generics ::std::default::Default for #name #type_generics #where_clause {
+                fn default() -> Self {
+                    Self {
+                        #(#field_names: ::std::vec::Vec::new(),)*
+                    }
+                }
             }
         }
-        let derived_relations = self
-            .rules
-            .iter()
-            .filter(|rule| !rule.body.is_empty())
-            .flat_map(|rule| rule.heads.iter().map(|head| head.relation))
-            .collect::<BTreeSet<_>>();
-        let hybrid_edbs = derived_relations
-            .iter()
-            .copied()
-            .filter(|relation| {
-                self.rules
-                    .iter()
-                    .filter(|rule| rule.heads.iter().any(|head| head.relation == *relation))
-                    .all(|rule| {
-                        rule.body.iter().any(
-                            |item| matches!(item, BodyItem::Atom(atom) if atom.relation == *relation),
-                        )
-                    })
-            })
-            .collect::<BTreeSet<_>>();
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn render_run(&self) -> Result<TokenStream> {
+        let runtime_crate = self.runtime_crate();
+        let flowlog_batch = self.flowlog_batch_enabled();
+        let mut inline_facts = BTreeMap::<RelationId, Vec<TokenStream>>::new();
+        for (&relation, facts) in self.inline_facts() {
+            for fact in facts {
+                inline_facts
+                    .entry(relation)
+                    .or_default()
+                    .push(emit_head_tuple_tokens(fact, &BTreeMap::new())?);
+            }
+        }
         let edbs = self
-            .relations
+            .edbs()
             .iter()
-            .filter(|relation| {
-                !derived_relations.contains(&relation.id)
-                    || inline_facts.contains_key(&relation.id)
-                    || hybrid_edbs.contains(&relation.id)
-            })
+            .map(|&relation| self.relation(relation))
             .collect_vec();
         let idbs = self
-            .relations
+            .idbs()
             .iter()
-            .filter(|relation| {
-                derived_relations.contains(&relation.id)
-                    && self
-                        .outputs
-                        .as_ref()
-                        .is_none_or(|outputs| outputs.contains(&relation.id))
-            })
+            .map(|&relation| self.relation(relation))
             .collect_vec();
 
         let input_copies = edbs.iter().map(|relation| {
@@ -226,28 +236,10 @@ impl HirProgram {
             })
             .collect_vec();
 
-        let mut stages = Vec::with_capacity(self.sccs.len());
+        let mut stages = Vec::with_capacity(self.regions().len());
         let mut emitted_transformations = BTreeSet::new();
-        let catalog = PlanningCatalog::new(
-            self.relations.clone(),
-            self.rules.clone(),
-            self.outputs
-                .as_ref()
-                .map(|outputs| outputs.iter().copied().sorted().collect()),
-        );
-        let mut initialized = edbs
-            .iter()
-            .map(|relation| relation.id)
-            .collect::<BTreeSet<_>>();
-        for scc in &self.sccs {
-            stages.push(self.emit_scc(
-                scc,
-                &mut initialized,
-                &mut emitted_transformations,
-                &catalog,
-                registry,
-                context,
-            )?);
+        for region in self.regions() {
+            stages.push(self.render_region(region, &mut emitted_transformations)?);
         }
 
         let inspectors = idbs
@@ -404,197 +396,174 @@ impl HirProgram {
 
     fn profile_plan(&self) -> String {
         let relations = self
-            .relations
+            .relations()
             .iter()
             .map(|relation| format!("\"{}\"", relation.name))
             .join(", ");
         format!(
             "{{\n  \"program\": \"{}\",\n  \"relations\": [{relations}],\n  \"rules\": {}\n}}\n",
-            self.signature.name,
-            self.rules.len()
+            self.signature().name,
+            self.rule_count()
         )
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn emit_scc(
+    fn render_region(
         &self,
-        scc: &Scc,
-        initialized: &mut BTreeSet<RelationId>,
+        region: &RegionPlan,
         emitted_transformations: &mut BTreeSet<String>,
-        catalog: &PlanningCatalog,
-        registry: &Registry,
-        context: &mut CompilerContext,
     ) -> Result<TokenStream> {
-        if scc.recursive {
-            let emitted = self.emit_recursive_scc(scc, initialized, catalog, registry, context)?;
-            initialized.extend(
-                scc.rules
-                    .iter()
-                    .flat_map(|&index| self.rules[index].heads.iter().map(|head| head.relation)),
-            );
-            Ok(emitted)
-        } else {
-            let initialized_before = initialized.clone();
-            let mut emitted = Vec::new();
-            for &rule_index in &scc.rules {
-                if self.rules[rule_index].body.is_empty() {
-                    continue;
-                }
-                emitted.extend(self.emit_non_recursive_rule(
-                    rule_index,
-                    initialized,
-                    catalog,
-                    registry,
-                    context,
-                )?);
-            }
-            if emitted
+        let root = region.root();
+        let Some(node) = region.graph().nodes().get(root.index()) else {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "program region root is absent from its plan graph",
+            ));
+        };
+        if node.operator() == NONRECURSIVE_REGION {
+            let physical = region
+                .graph()
+                .facts()
+                .relation::<NonRecursiveRegion>()
                 .iter()
-                .any(|emission| matches!(emission, RuleEmission::Generic(_)))
-            {
-                let emitted = emitted.iter().map(RuleEmission::tokens);
-                return Ok(quote! { #(#emitted)* });
-            }
-            let mut transformations = Vec::new();
-            let mut bindings =
-                BTreeMap::<u64, (RelationId, Vec<(Vec<TokenStream>, Option<Ident>)>)>::new();
-            for emission in emitted {
-                let RuleEmission::Specialized(emission) = emission else {
-                    unreachable!("generic emissions returned before structured grouping");
-                };
-                transformations.extend(emission.transformations.into_iter().filter_map(
-                    |transformation| {
-                        emitted_transformations
-                            .insert(transformation.ident.to_string())
-                            .then_some(transformation.statement)
-                    },
-                ));
-                let fingerprint = flowlog_fp::relation(&flowlog_relation_fingerprint_name(
-                    &self.relations[emission.target.0],
-                ));
-                bindings
-                    .entry(fingerprint)
-                    .or_insert_with(|| (emission.target, Vec::new()))
-                    .1
-                    .push((emission.bindings, emission.final_transform));
-            }
-            let bindings = bindings.into_values().map(|(relation, mut group)| {
-                if group.len() == 1 {
-                    let statements = group.pop().expect("one binding").0;
-                    return quote! { #(#statements)* };
-                }
-                let transforms = group
-                    .iter_mut()
-                    .map(|(_, transform)| transform.take())
-                    .collect::<Option<Vec<_>>>();
-                let Some(transforms) = transforms else {
-                    let statements = group.into_iter().flat_map(|(statements, _)| statements);
-                    return quote! { #(#statements)* };
-                };
-                let tails = group
-                    .into_iter()
-                    .flat_map(|(statements, _)| statements.into_iter().skip(1));
-                let target = collection_ident(&self.relations[relation.0]);
-                if initialized_before.contains(&relation) {
-                    quote! {
-                        let #target = #target
-                            .concatenate([#(#transforms.clone()),*])
-                            .consolidate();
-                        #(#tails)*
-                    }
-                } else {
-                    let (first, rest) = transforms
-                        .split_first()
-                        .expect("multiple bindings have transforms");
-                    quote! {
-                        let #target = #first
-                            .clone()
-                            .concatenate([#(#rest.clone()),*])
-                            .consolidate();
-                        #(#tails)*
-                    }
-                }
-            });
-            Ok(quote! { #(#transformations)* #(#bindings)* })
+                .find(|physical| physical.node == root)
+                .ok_or_else(|| {
+                    syn::Error::new(
+                        Span::call_site(),
+                        "nonrecursive region is missing its physical facts",
+                    )
+                })?;
+            self.render_nonrecursive_region(physical, emitted_transformations)
+        } else if node.operator() == RECURSIVE_REGION {
+            let physical = region
+                .graph()
+                .facts()
+                .relation::<RecursiveRegion>()
+                .iter()
+                .find(|physical| physical.node == root)
+                .ok_or_else(|| {
+                    syn::Error::new(
+                        Span::call_site(),
+                        "recursive region is missing its physical facts",
+                    )
+                })?;
+            self.render_recursive_scc(physical.plan())
+        } else {
+            Err(syn::Error::new(
+                Span::call_site(),
+                format!(
+                    "program region operator `{}` has no installed DD renderer",
+                    node.operator().name()
+                ),
+            ))
         }
     }
 
-    fn emit_non_recursive_rule(
+    #[allow(clippy::too_many_lines)]
+    fn render_nonrecursive_region(
         &self,
-        rule_index: usize,
-        initialized: &mut BTreeSet<RelationId>,
-        catalog: &PlanningCatalog,
-        registry: &Registry,
-        context: &mut CompilerContext,
-    ) -> Result<Vec<RuleEmission>> {
-        let rule = &self.rules[rule_index];
-        let mut planned = if rule.heads.len() == 1 {
-            Some(registry.perform::<PlanRule>(
-                context,
-                RuleRequest::new(catalog.clone(), rule_index, 0, initialized.clone(), false),
-            )?)
-        } else {
-            None
-        };
-        if let Some(emission) = planned.as_ref().and_then(Self::render_flowlog_single_atom) {
-            initialized.insert(emission.target);
-            return Ok(vec![RuleEmission::Specialized(emission)]);
+        region: &NonRecursiveRegion,
+        emitted_transformations: &mut BTreeSet<String>,
+    ) -> Result<TokenStream> {
+        let mut initialized = region.initialized_before().clone();
+        let mut emitted = Vec::new();
+        for rule in region.rules() {
+            emitted.extend(self.render_nonrecursive_rule(rule, &mut initialized)?);
         }
-        if let Some(emission) = planned
-            .as_ref()
-            .and_then(Self::render_flowlog_direct_aggregate)
+        if emitted
+            .iter()
+            .any(|emission| matches!(emission, RuleEmission::Generic(_)))
         {
-            initialized.insert(emission.target);
-            return Ok(vec![RuleEmission::Specialized(emission)]);
+            let emitted = emitted.iter().map(RuleEmission::tokens);
+            return Ok(quote! { #(#emitted)* });
         }
-        if let Some(emission) = planned
-            .as_ref()
-            .and_then(Self::render_flowlog_unary_antijoin)
-        {
-            initialized.insert(emission.target);
-            return Ok(vec![RuleEmission::Specialized(emission)]);
-        }
-        if let Some(emission) = planned
-            .as_ref()
-            .and_then(Self::render_flowlog_tuple_equijoin)
-        {
-            initialized.insert(emission.target);
-            return Ok(vec![RuleEmission::Specialized(emission)]);
-        }
-        if let Some(emission) = planned
-            .as_ref()
-            .and_then(Self::render_flowlog_three_atom_join)
-        {
-            initialized.insert(emission.target);
-            return Ok(vec![RuleEmission::Specialized(emission)]);
-        }
-        if let Some(emission) = planned.as_ref().and_then(Self::render_flowlog_binary_join) {
-            initialized.insert(emission.target);
-            return Ok(vec![RuleEmission::Specialized(emission)]);
-        }
-        let mut emitted = Vec::with_capacity(rule.heads.len());
-        for (head_index, head) in rule.heads.iter().enumerate() {
-            let derived = format_ident!("__miniflow_rule_{}", emitted.len());
-            let expression = if head_index == 0
-                && let Some(plan) = planned.take()
-            {
-                self.render_rule_plan(&plan, ScopeMode::Outer)?
-            } else {
-                self.emit_rule_expression(
-                    RuleRequest::new(
-                        catalog.clone(),
-                        rule_index,
-                        head_index,
-                        initialized.clone(),
-                        false,
-                    ),
-                    ScopeMode::Outer,
-                    registry,
-                    context,
-                )?
+        let mut transformations = Vec::new();
+        let mut bindings =
+            BTreeMap::<u64, (RelationId, Vec<(Vec<TokenStream>, Option<Ident>)>)>::new();
+        for emission in emitted {
+            let RuleEmission::Specialized(emission) = emission else {
+                unreachable!("generic emissions returned before structured grouping");
             };
-            let target = collection_ident(&self.relations[head.relation.0]);
-            if initialized.insert(head.relation) {
+            transformations.extend(emission.transformations.into_iter().filter_map(
+                |transformation| {
+                    emitted_transformations
+                        .insert(transformation.ident.to_string())
+                        .then_some(transformation.statement)
+                },
+            ));
+            let fingerprint = flowlog_fp::relation(&flowlog_relation_fingerprint_name(
+                self.relation(emission.target),
+            ));
+            bindings
+                .entry(fingerprint)
+                .or_insert_with(|| (emission.target, Vec::new()))
+                .1
+                .push((emission.bindings, emission.final_transform));
+        }
+        let bindings = bindings.into_values().map(|(relation, mut group)| {
+            if group.len() == 1 {
+                let statements = group.pop().expect("one binding").0;
+                return quote! { #(#statements)* };
+            }
+            let transforms = group
+                .iter_mut()
+                .map(|(_, transform)| transform.take())
+                .collect::<Option<Vec<_>>>();
+            let Some(transforms) = transforms else {
+                let statements = group.into_iter().flat_map(|(statements, _)| statements);
+                return quote! { #(#statements)* };
+            };
+            let tails = group
+                .into_iter()
+                .flat_map(|(statements, _)| statements.into_iter().skip(1));
+            let target = collection_ident(self.relation(relation));
+            if region.initialized_before().contains(&relation) {
+                quote! {
+                    let #target = #target
+                        .concatenate([#(#transforms.clone()),*])
+                        .consolidate();
+                    #(#tails)*
+                }
+            } else {
+                let (first, rest) = transforms
+                    .split_first()
+                    .expect("multiple bindings have transforms");
+                quote! {
+                    let #target = #first
+                        .clone()
+                        .concatenate([#(#rest.clone()),*])
+                        .consolidate();
+                    #(#tails)*
+                }
+            }
+        });
+        Ok(quote! { #(#transformations)* #(#bindings)* })
+    }
+
+    fn render_nonrecursive_rule(
+        &self,
+        rule: &ScheduledRule,
+        initialized: &mut BTreeSet<RelationId>,
+    ) -> Result<Vec<RuleEmission>> {
+        if let [head] = rule.heads() {
+            let plan = head.plan();
+            let specialized = Self::render_flowlog_single_atom(plan)
+                .or_else(|| Self::render_flowlog_direct_aggregate(plan))
+                .or_else(|| Self::render_flowlog_unary_antijoin(plan))
+                .or_else(|| Self::render_flowlog_tuple_equijoin(plan))
+                .or_else(|| Self::render_flowlog_three_atom_join(plan))
+                .or_else(|| Self::render_flowlog_binary_join(plan));
+            if let Some(emission) = specialized {
+                initialized.insert(emission.target);
+                return Ok(vec![RuleEmission::Specialized(emission)]);
+            }
+        }
+
+        let mut emitted = Vec::with_capacity(rule.heads().len());
+        for head in rule.heads() {
+            let derived = format_ident!("__miniflow_rule_{}", emitted.len());
+            let expression = self.render_rule_plan(head.plan(), ScopeMode::Outer)?;
+            let target = collection_ident(self.relation(head.target()));
+            if initialized.insert(head.target()) {
                 emitted.push(RuleEmission::Generic(quote! {
                     let #derived = #expression;
                     let #target = #derived.consolidate();
@@ -1183,59 +1152,17 @@ impl HirProgram {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn emit_recursive_scc(
-        &self,
-        scc: &Scc,
-        initialized: &mut BTreeSet<RelationId>,
-        catalog: &PlanningCatalog,
-        registry: &Registry,
-        context: &mut CompilerContext,
-    ) -> Result<TokenStream> {
-        let mut rule_plans = Vec::new();
-        for &rule_index in &scc.rules {
-            let rule = &self.rules[rule_index];
-            for (head_index, head) in rule.heads.iter().enumerate() {
-                let plan = registry.perform::<PlanRule>(
-                    context,
-                    RuleRequest::new(
-                        catalog.clone(),
-                        rule_index,
-                        head_index,
-                        initialized.clone(),
-                        true,
-                    ),
-                )?;
-                rule_plans.push(SccRulePlan::new(
-                    rule_index,
-                    head_index,
-                    head.relation,
-                    plan,
-                ));
-            }
-        }
-        let planned = registry.perform::<PlanScc>(
-            context,
-            SccRequest::new(
-                catalog.clone(),
-                scc.clone(),
-                initialized.clone(),
-                rule_plans,
-            ),
-        )?;
-        if let Some((target, emitted)) = Self::render_flowlog_symmetric_closure(&planned) {
-            initialized.insert(target);
+    fn render_recursive_scc(&self, planned: &SccPlan) -> Result<TokenStream> {
+        if let Some((_target, emitted)) = Self::render_flowlog_symmetric_closure(planned) {
             return Ok(emitted);
         }
-        if let Some((target, emitted)) = Self::render_flowlog_mutual_unary(&planned) {
-            initialized.insert(target);
+        if let Some((_target, emitted)) = Self::render_flowlog_mutual_unary(planned) {
             return Ok(emitted);
         }
-        if let Some((target, emitted)) = Self::render_flowlog_recursive_aggregate(&planned) {
-            initialized.insert(target);
+        if let Some((_target, emitted)) = Self::render_flowlog_recursive_aggregate(planned) {
             return Ok(emitted);
         }
-        if let Some((target, emitted)) = Self::render_flowlog_recursive_join(&planned) {
-            initialized.insert(target);
+        if let Some((_target, emitted)) = Self::render_flowlog_recursive_join(planned) {
             return Ok(emitted);
         }
 
@@ -1272,7 +1199,6 @@ impl HirProgram {
                 "recursive SCC has no derived relation",
             ));
         }
-        initialized.extend(recursive_relations.iter().copied());
         let relation_info = |id: RelationId| {
             physical
                 .relations()
@@ -1930,17 +1856,6 @@ impl HirProgram {
         ))
     }
 
-    fn emit_rule_expression(
-        &self,
-        request: RuleRequest,
-        mode: ScopeMode,
-        registry: &Registry,
-        context: &mut CompilerContext,
-    ) -> Result<TokenStream> {
-        let plan = registry.perform::<PlanRule>(context, request)?;
-        self.render_rule_plan(&plan, mode)
-    }
-
     fn render_rule_plan(&self, plan: &RulePlan, mode: ScopeMode) -> Result<TokenStream> {
         let mut rendered = None;
 
@@ -2187,7 +2102,7 @@ impl HirProgram {
             ));
         }
 
-        let relation = &self.relations[aggregate.source.relation.0];
+        let relation = self.relation(aggregate.source.relation);
         let rows = row_bindings(relation);
         let row_pattern = tuple(rows.iter().map(|row| quote! { #row }));
         let row_type = tuple_type(relation);
@@ -2244,7 +2159,7 @@ impl HirProgram {
         };
 
         let right_key = tuple(right_keys);
-        let reduce = aggregate_reduce(&operator, &self.runtime_crate);
+        let reduce = aggregate_reduce(&operator, self.runtime_crate());
         let reduced = quote! {
             #collection
                 .map(move |#row_pattern: #row_type| {
@@ -2297,7 +2212,7 @@ impl HirProgram {
     }
 
     fn emit_first_atom(&self, atom: &Atom, mode: ScopeMode) -> RenderedEnvironment {
-        let relation = &self.relations[atom.relation.0];
+        let relation = self.relation(atom.relation);
         let collection = mode.collection(relation);
         let row_bindings = row_bindings(relation);
         let row_pattern = tuple(row_bindings.iter().map(|binding| quote! { #binding }));
@@ -2363,7 +2278,7 @@ impl HirProgram {
         atom: &Atom,
         mode: ScopeMode<'_>,
     ) -> Result<RenderedEnvironment> {
-        let relation = &self.relations[atom.relation.0];
+        let relation = self.relation(atom.relation);
         let rows = row_bindings(relation);
         let row_pattern = tuple(rows.iter().map(|row| quote! { #row }));
         let row_type = tuple_type(relation);
@@ -2449,7 +2364,7 @@ impl HirProgram {
         atom: &Atom,
         mode: ScopeMode,
     ) -> RenderedEnvironment {
-        let relation = &self.relations[atom.relation.0];
+        let relation = self.relation(atom.relation);
         let rows = row_bindings(relation);
         let row_pattern = tuple(rows.iter().map(|row| quote! { #row }));
         let row_type = tuple_type(relation);
@@ -2535,18 +2450,6 @@ impl HirProgram {
             expression,
             bindings,
         }
-    }
-
-    fn profile_enabled(&self) -> bool {
-        self.attributes
-            .iter()
-            .any(|attribute| attribute.path().is_ident("profile"))
-    }
-
-    fn flowlog_batch_enabled(&self) -> bool {
-        self.attributes
-            .iter()
-            .any(|attribute| attribute.path().is_ident("flowlog_batch"))
     }
 }
 
