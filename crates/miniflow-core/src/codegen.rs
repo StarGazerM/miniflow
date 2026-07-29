@@ -7,17 +7,17 @@ use syn::{Expr, Result};
 
 use crate::compiler::{CompilerContext, Registry};
 use crate::flowlog_analysis::{
-    binary_expression_variables, expression_mentions_ident, expression_variable_ident,
-    expression_variables, flowlog_data_type, flowlog_variable, variable_name,
+    binary_expression_variables, expression_variable_ident, expression_variables,
+    flowlog_data_type, variable_name,
 };
 use crate::flowlog_fp;
 use crate::flowlog_fp::TransformationArgument;
 use crate::flowlog_plan::{
     BINARY_JOIN, BinaryJoinPlan, DIRECT_AGGREGATE, DirectAggregatePlan, JoinSidePlan, MUTUAL_UNARY,
-    MutualUnaryPlan, SINGLE_FILTER, SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP, SINGLE_IDENTITY,
-    SINGLE_MAP_IN_PLACE, SYMMETRIC_CLOSURE, SingleAtomPlan, SymmetricClosurePlan, THREE_ATOM_JOIN,
-    TUPLE_EQUIJOIN, ThreeAtomJoinPlan, TupleEquijoinPlan, UNARY_ANTIJOIN, UnaryAntijoinPlan,
-    UnaryAntijoinStage,
+    MutualUnaryPlan, RECURSIVE_AGGREGATE, RecursiveAggregateMode, RecursiveAggregatePlan,
+    SINGLE_FILTER, SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP, SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE,
+    SYMMETRIC_CLOSURE, SingleAtomPlan, SymmetricClosurePlan, THREE_ATOM_JOIN, TUPLE_EQUIJOIN,
+    ThreeAtomJoinPlan, TupleEquijoinPlan, UNARY_ANTIJOIN, UnaryAntijoinPlan, UnaryAntijoinStage,
 };
 use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId, Scc};
 use crate::pipeline::{PlanRule, PlanScc, PlanningCatalog, RuleRequest, SccRequest};
@@ -1203,7 +1203,7 @@ impl HirProgram {
             initialized.insert(target);
             return Ok(emitted);
         }
-        if let Some((target, emitted)) = self.emit_flowlog_recursive_aggregate(scc, initialized) {
+        if let Some((target, emitted)) = Self::render_flowlog_recursive_aggregate(&planned) {
             initialized.insert(target);
             return Ok(emitted);
         }
@@ -1533,199 +1533,36 @@ impl HirProgram {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn emit_flowlog_recursive_aggregate(
-        &self,
-        scc: &Scc,
-        initialized: &BTreeSet<RelationId>,
-    ) -> Option<(RelationId, TokenStream)> {
-        let [rule_index] = scc.rules.as_slice() else {
-            return None;
-        };
-        let rule = &self.rules[*rule_index];
-        let [head] = rule.heads.as_slice() else {
-            return None;
-        };
-        let [BodyItem::Atom(recursive), BodyItem::Aggregate(aggregate)] = rule.body.as_slice()
-        else {
-            return None;
-        };
-        let head_relation = &self.relations[head.relation.0];
-        let edge_relation = &self.relations[aggregate.source.relation.0];
-        let aggregate_type = flowlog_data_type(head_relation.columns.last()?)?;
-        let operator = aggregate.operator.to_string();
-        let multi_source = head_relation.columns.len() == 3 && edge_relation.columns.len() == 2;
-        let recursive_value_only =
-            head_relation.columns.len() == 2 && edge_relation.columns.len() == 2;
-        if recursive.relation != head.relation
-            || !initialized.contains(&head.relation)
-            || !(head_relation.columns.len() == 2 && edge_relation.columns.len() == 3
-                || multi_source
-                || recursive_value_only)
-            || aggregate.arguments.len() != 1
-            || !matches!(operator.as_str(), "min" | "max")
-        {
+    fn render_flowlog_recursive_aggregate(plan: &SccPlan) -> Option<(RelationId, TokenStream)> {
+        let root = plan.root();
+        if plan.graph().nodes().get(root.index())?.operator() != RECURSIVE_AGGREGATE {
             return None;
         }
-        let edge_fp = flowlog_fp::relation(&flowlog_relation_fingerprint_name(edge_relation));
-        let head_fp = flowlog_fp::relation(&flowlog_relation_fingerprint_name(head_relation));
-        let (edge_plan, recursive_plan, join_values) = if multi_source {
-            let source = variable_name(&recursive.arguments[0])?;
-            let middle = variable_name(&recursive.arguments[1])?;
-            let distance = variable_name(&recursive.arguments[2])?;
-            if variable_name(&aggregate.source.arguments[0])? != middle
-                || variable_name(&head.arguments[0])? != source
-                || variable_name(&head.arguments[1])?
-                    != variable_name(&aggregate.source.arguments[1])?
-                || !expression_mentions_ident(
-                    &aggregate.arguments[0],
-                    &Ident::new(&distance, Span::call_site()),
-                )
-            {
-                return None;
-            }
-            (
-                flowlog_fp::unary(
-                    "row_to_kv",
-                    edge_fp,
-                    [TransformationArgument::KV((false, 0))],
-                    [TransformationArgument::KV((false, 1))],
-                ),
-                flowlog_fp::unary(
-                    "row_to_kv",
-                    head_fp,
-                    [TransformationArgument::KV((false, 1))],
-                    [
-                        TransformationArgument::KV((false, 0)),
-                        TransformationArgument::KV((false, 2)),
-                    ],
-                ),
-                vec![
-                    flowlog_variable(TransformationArgument::Jn((true, false, 0))),
-                    flowlog_variable(TransformationArgument::Jn((false, false, 0))),
-                    flowlog_fp::ArithmeticArgument {
-                        init: flowlog_fp::FactorArgument::Var(TransformationArgument::Jn((
-                            true, false, 1,
-                        ))),
-                        rest: vec![(
-                            flowlog_fp::ArithmeticOperator::Plus,
-                            flowlog_fp::FactorArgument::Const(flowlog_fp::Constant {
-                                text: "1".to_owned(),
-                                ty: aggregate_type.clone(),
-                            }),
-                        )],
-                    },
-                ],
-            )
-        } else if recursive_value_only {
-            let recursive_source = variable_name(&recursive.arguments[0])?;
-            let recursive_value = variable_name(&recursive.arguments[1])?;
-            let edge_source = variable_name(&aggregate.source.arguments[0])?;
-            let edge_destination = variable_name(&aggregate.source.arguments[1])?;
-            if recursive_source != edge_source
-                || variable_name(&head.arguments[0])? != edge_destination
-                || !expression_mentions_ident(
-                    &aggregate.arguments[0],
-                    &Ident::new(&recursive_value, Span::call_site()),
-                )
-            {
-                return None;
-            }
-            (
-                flowlog_fp::unary(
-                    "row_to_kv",
-                    edge_fp,
-                    [TransformationArgument::KV((false, 0))],
-                    [TransformationArgument::KV((false, 1))],
-                ),
-                flowlog_fp::unary(
-                    "row_to_kv",
-                    head_fp,
-                    [TransformationArgument::KV((false, 0))],
-                    [TransformationArgument::KV((false, 1))],
-                ),
-                vec![
-                    flowlog_variable(TransformationArgument::Jn((false, false, 0))),
-                    flowlog_variable(TransformationArgument::Jn((true, false, 0))),
-                ],
-            )
-        } else {
-            let recursive_source = variable_name(&recursive.arguments[0])?;
-            let recursive_value = variable_name(&recursive.arguments[1])?;
-            let edge_source = variable_name(&aggregate.source.arguments[0])?;
-            let edge_destination = variable_name(&aggregate.source.arguments[1])?;
-            let edge_value = variable_name(&aggregate.source.arguments[2])?;
-            if recursive_source != edge_source
-                || variable_name(&head.arguments[0])? != edge_destination
-                || !expression_mentions_ident(
-                    &aggregate.arguments[0],
-                    &Ident::new(&recursive_value, Span::call_site()),
-                )
-                || !expression_mentions_ident(
-                    &aggregate.arguments[0],
-                    &Ident::new(&edge_value, Span::call_site()),
-                )
-            {
-                return None;
-            }
-            (
-                flowlog_fp::unary(
-                    "row_to_kv",
-                    edge_fp,
-                    [TransformationArgument::KV((false, 0))],
-                    [
-                        TransformationArgument::KV((false, 1)),
-                        TransformationArgument::KV((false, 2)),
-                    ],
-                ),
-                flowlog_fp::unary(
-                    "row_to_kv",
-                    head_fp,
-                    [TransformationArgument::KV((false, 0))],
-                    [TransformationArgument::KV((false, 1))],
-                ),
-                vec![
-                    flowlog_variable(TransformationArgument::Jn((false, false, 0))),
-                    flowlog_fp::ArithmeticArgument {
-                        init: flowlog_fp::FactorArgument::Var(TransformationArgument::Jn((
-                            true, false, 0,
-                        ))),
-                        rest: vec![(
-                            flowlog_fp::ArithmeticOperator::Plus,
-                            flowlog_fp::FactorArgument::Var(TransformationArgument::Jn((
-                                false, false, 1,
-                            ))),
-                        )],
-                    },
-                ],
-            )
-        };
-        let join_plan = flowlog_fp::join_expressions(
-            "jn_to_row",
-            recursive_plan,
-            edge_plan,
-            Vec::new(),
-            join_values,
-            Vec::new(),
-        );
-        let next_plan = flowlog_fp::relation(&flowlog_relation_fingerprint_name(head_relation));
-        let edge_transform = format_ident!("t_{edge_plan}");
-        let edge_arrangement = format_ident!("t_{edge_plan}_arr");
-        let entered_edge = format_ident!("in_t_{edge_plan}_arr");
-        let recursive_transform = format_ident!("t_{recursive_plan}");
-        let recursive_arrangement = format_ident!("t_{recursive_plan}_arr");
-        let join_transform = format_ident!("t_{join_plan}");
-        let next = format_ident!("next_{next_plan}");
+        let physical = plan
+            .graph()
+            .facts()
+            .relation::<RecursiveAggregatePlan>()
+            .iter()
+            .find(|physical| physical.node == root)?;
+        let head_relation = &physical.head_relation;
+        let edge_relation = &physical.edge_relation;
+        let edge_transform = format_ident!("t_{}", physical.edge_fingerprint);
+        let edge_arrangement = format_ident!("t_{}_arr", physical.edge_fingerprint);
+        let entered_edge = format_ident!("in_t_{}_arr", physical.edge_fingerprint);
+        let recursive_transform = format_ident!("t_{}", physical.recursive_fingerprint);
+        let recursive_arrangement = format_ident!("t_{}_arr", physical.recursive_fingerprint);
+        let join_transform = format_ident!("t_{}", physical.join_fingerprint);
+        let next = format_ident!("next_{}", physical.next_fingerprint);
         let edge_collection = collection_ident(edge_relation);
         let head_collection = collection_ident(head_relation);
         let entered_head = inner_base_ident(head_relation);
         let recursive_collection = inner_collection_ident(head_relation);
         let recursive_variable = variable_ident(head_relation);
-        let semigroup = match (operator.as_str(), &aggregate_type) {
-            ("min", flowlog_fp::DataType::Int64) => format_ident!("MinI64"),
-            ("min", _) => format_ident!("MinI32"),
-            ("max", flowlog_fp::DataType::Int64) => format_ident!("MaxI64"),
-            ("max", _) => format_ident!("MaxI32"),
-            _ => return None,
+        let semigroup = match (physical.minimum, physical.aggregate_i64) {
+            (true, true) => format_ident!("MinI64"),
+            (true, false) => format_ident!("MinI32"),
+            (false, true) => format_ident!("MaxI64"),
+            (false, false) => format_ident!("MaxI32"),
         };
         let head_type_0 = &head_relation.columns[0];
         let head_type_1 = &head_relation.columns[1];
@@ -1733,7 +1570,7 @@ impl HirProgram {
         let edge_type_0 = &edge_relation.columns[0];
         let edge_type_1 = &edge_relation.columns[1];
         let edge_type_2 = edge_relation.columns.get(2);
-        let guard = if operator == "min" {
+        let guard = if physical.minimum {
             quote! { new_val < *current }
         } else {
             quote! { new_val > *current }
@@ -1750,8 +1587,8 @@ impl HirProgram {
             })
         };
         let (edge_emission, enter_emission, recursive_emission, join_row, aggregate, leave, unwrap) =
-            if multi_source {
-                (
+            match physical.mode {
+                RecursiveAggregateMode::MultiSource => (
                     quote! {
                         let #edge_transform = #edge_collection
                             .clone()
@@ -1808,9 +1645,8 @@ impl HirProgram {
                             })
                             .as_collection()
                     },
-                )
-            } else if recursive_value_only {
-                (
+                ),
+                RecursiveAggregateMode::RecursiveValueOnly => (
                     quote! {
                         let #edge_transform = #edge_collection
                             .clone()
@@ -1863,9 +1699,8 @@ impl HirProgram {
                             })
                             .as_collection()
                     },
-                )
-            } else {
-                (
+                ),
+                RecursiveAggregateMode::Weighted => (
                     quote! {
                         let #edge_transform = #edge_collection
                             .clone()
@@ -1922,11 +1757,11 @@ impl HirProgram {
                             })
                             .as_collection()
                     },
-                )
+                ),
             };
 
         Some((
-            head.relation,
+            head_relation.id,
             quote! {
                 #edge_emission
                 let #edge_arrangement = #edge_transform.clone().arrange_by_key();

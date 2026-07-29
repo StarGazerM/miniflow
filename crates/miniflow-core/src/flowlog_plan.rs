@@ -10,7 +10,7 @@ use crate::compiler::Registry;
 use crate::flowlog_analysis::{
     dereferenced_variable_name, expression_mentions_ident, expression_type,
     expression_variable_ident, flowlog_arithmetic, flowlog_comparison_operator, flowlog_constant,
-    flowlog_copy_type, variable_name,
+    flowlog_copy_type, flowlog_data_type, variable_name,
 };
 use crate::flowlog_fp;
 use crate::flowlog_fp::TransformationArgument;
@@ -68,6 +68,10 @@ pub const SYMMETRIC_CLOSURE: OperatorKey = OperatorKey::new("miniflow.flowlog.sy
 
 /// FlowLog-compatible mutually recursive unary reachability region.
 pub const MUTUAL_UNARY: OperatorKey = OperatorKey::new("miniflow.flowlog.mutual-unary");
+
+/// FlowLog-compatible recursive min/max aggregation region.
+pub const RECURSIVE_AGGREGATE: OperatorKey =
+    OperatorKey::new("miniflow.flowlog.recursive-aggregate");
 
 /// Physical facts needed to render one FlowLog-compatible unary rule.
 #[derive(Clone)]
@@ -590,6 +594,42 @@ pub struct MutualUnaryPlan {
     pub expose_other: bool,
 }
 
+/// Physical row layout used by recursive aggregate maintenance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecursiveAggregateMode {
+    /// Three-column recursive state extended by a binary edge.
+    MultiSource,
+    /// Two-column recursive value propagated through a binary edge.
+    RecursiveValueOnly,
+    /// Two-column recursive state combined with a weighted ternary edge.
+    Weighted,
+}
+
+/// Physical facts needed to render recursive min/max aggregation.
+#[derive(Clone)]
+pub struct RecursiveAggregatePlan {
+    /// Physical operator node described by these facts.
+    pub node: NodeId,
+    /// Resolved recursive output relation.
+    pub head_relation: Relation,
+    /// Resolved nonrecursive edge relation.
+    pub edge_relation: Relation,
+    /// Row-layout variant selected by planning.
+    pub mode: RecursiveAggregateMode,
+    /// Whether the aggregate is `min` (`false` means `max`).
+    pub minimum: bool,
+    /// Whether the aggregate value uses a 64-bit integer semigroup.
+    pub aggregate_i64: bool,
+    /// Edge arrangement transformation fingerprint.
+    pub edge_fingerprint: u64,
+    /// Recursive arrangement transformation fingerprint.
+    pub recursive_fingerprint: u64,
+    /// Join transformation fingerprint.
+    pub join_fingerprint: u64,
+    /// Recursive relation fingerprint used for the next binding.
+    pub next_fingerprint: u64,
+}
+
 pub(crate) fn install(registry: &mut Registry) {
     registry.around::<PlanRule, _>(|context, request, next| {
         if let Some(plan) = plan_three_atom_join(&request)
@@ -605,7 +645,9 @@ pub(crate) fn install(registry: &mut Registry) {
         }
     });
     registry.around::<PlanScc, _>(|context, request, next| {
-        if let Some(plan) = plan_symmetric_closure(&request).or_else(|| plan_mutual_unary(&request))
+        if let Some(plan) = plan_symmetric_closure(&request)
+            .or_else(|| plan_mutual_unary(&request))
+            .or_else(|| plan_recursive_aggregate(&request))
         {
             Ok(plan)
         } else {
@@ -839,6 +881,206 @@ fn plan_mutual_unary(request: &SccRequest) -> Option<SccPlan> {
         base_to_other_fingerprint,
         other_to_base_fingerprint,
         expose_other,
+    });
+    Some(SccPlan::from_graph(graph, node))
+}
+
+#[allow(clippy::too_many_lines)]
+fn plan_recursive_aggregate(request: &SccRequest) -> Option<SccPlan> {
+    let [rule_index] = request.scc().rules.as_slice() else {
+        return None;
+    };
+    let rule = &request.catalog().rules()[*rule_index];
+    let [head] = rule.heads.as_slice() else {
+        return None;
+    };
+    let [BodyItem::Atom(recursive), BodyItem::Aggregate(aggregate)] = rule.body.as_slice() else {
+        return None;
+    };
+    let head_relation = request.catalog().relation(head.relation);
+    let edge_relation = request.catalog().relation(aggregate.source.relation);
+    let aggregate_type = flowlog_data_type(head_relation.columns.last()?)?;
+    let operator = aggregate.operator.to_string();
+    let multi_source = head_relation.columns.len() == 3 && edge_relation.columns.len() == 2;
+    let recursive_value_only = head_relation.columns.len() == 2 && edge_relation.columns.len() == 2;
+    if recursive.relation != head.relation
+        || !request.initialized().contains(&head.relation)
+        || !(head_relation.columns.len() == 2 && edge_relation.columns.len() == 3
+            || multi_source
+            || recursive_value_only)
+        || aggregate.arguments.len() != 1
+        || !matches!(operator.as_str(), "min" | "max")
+    {
+        return None;
+    }
+    let edge_relation_fingerprint = flowlog_fp::relation(&relation_fingerprint_name(edge_relation));
+    let head_relation_fingerprint = flowlog_fp::relation(&relation_fingerprint_name(head_relation));
+    let (mode, edge_fingerprint, recursive_fingerprint, join_values) = if multi_source {
+        let source = variable_name(&recursive.arguments[0])?;
+        let middle = variable_name(&recursive.arguments[1])?;
+        let distance = variable_name(&recursive.arguments[2])?;
+        if variable_name(&aggregate.source.arguments[0])? != middle
+            || variable_name(&head.arguments[0])? != source
+            || variable_name(&head.arguments[1])? != variable_name(&aggregate.source.arguments[1])?
+            || !expression_mentions_ident(
+                &aggregate.arguments[0],
+                &syn::Ident::new(&distance, proc_macro2::Span::call_site()),
+            )
+        {
+            return None;
+        }
+        (
+            RecursiveAggregateMode::MultiSource,
+            flowlog_fp::unary(
+                "row_to_kv",
+                edge_relation_fingerprint,
+                [TransformationArgument::KV((false, 0))],
+                [TransformationArgument::KV((false, 1))],
+            ),
+            flowlog_fp::unary(
+                "row_to_kv",
+                head_relation_fingerprint,
+                [TransformationArgument::KV((false, 1))],
+                [
+                    TransformationArgument::KV((false, 0)),
+                    TransformationArgument::KV((false, 2)),
+                ],
+            ),
+            vec![
+                crate::flowlog_analysis::flowlog_variable(TransformationArgument::Jn((
+                    true, false, 0,
+                ))),
+                crate::flowlog_analysis::flowlog_variable(TransformationArgument::Jn((
+                    false, false, 0,
+                ))),
+                flowlog_fp::ArithmeticArgument {
+                    init: flowlog_fp::FactorArgument::Var(TransformationArgument::Jn((
+                        true, false, 1,
+                    ))),
+                    rest: vec![(
+                        flowlog_fp::ArithmeticOperator::Plus,
+                        flowlog_fp::FactorArgument::Const(flowlog_fp::Constant {
+                            text: "1".to_owned(),
+                            ty: aggregate_type.clone(),
+                        }),
+                    )],
+                },
+            ],
+        )
+    } else if recursive_value_only {
+        let recursive_source = variable_name(&recursive.arguments[0])?;
+        let recursive_value = variable_name(&recursive.arguments[1])?;
+        let edge_source = variable_name(&aggregate.source.arguments[0])?;
+        let edge_destination = variable_name(&aggregate.source.arguments[1])?;
+        if recursive_source != edge_source
+            || variable_name(&head.arguments[0])? != edge_destination
+            || !expression_mentions_ident(
+                &aggregate.arguments[0],
+                &syn::Ident::new(&recursive_value, proc_macro2::Span::call_site()),
+            )
+        {
+            return None;
+        }
+        (
+            RecursiveAggregateMode::RecursiveValueOnly,
+            flowlog_fp::unary(
+                "row_to_kv",
+                edge_relation_fingerprint,
+                [TransformationArgument::KV((false, 0))],
+                [TransformationArgument::KV((false, 1))],
+            ),
+            flowlog_fp::unary(
+                "row_to_kv",
+                head_relation_fingerprint,
+                [TransformationArgument::KV((false, 0))],
+                [TransformationArgument::KV((false, 1))],
+            ),
+            vec![
+                crate::flowlog_analysis::flowlog_variable(TransformationArgument::Jn((
+                    false, false, 0,
+                ))),
+                crate::flowlog_analysis::flowlog_variable(TransformationArgument::Jn((
+                    true, false, 0,
+                ))),
+            ],
+        )
+    } else {
+        let recursive_source = variable_name(&recursive.arguments[0])?;
+        let recursive_value = variable_name(&recursive.arguments[1])?;
+        let edge_source = variable_name(&aggregate.source.arguments[0])?;
+        let edge_destination = variable_name(&aggregate.source.arguments[1])?;
+        let edge_value = variable_name(&aggregate.source.arguments[2])?;
+        if recursive_source != edge_source
+            || variable_name(&head.arguments[0])? != edge_destination
+            || !expression_mentions_ident(
+                &aggregate.arguments[0],
+                &syn::Ident::new(&recursive_value, proc_macro2::Span::call_site()),
+            )
+            || !expression_mentions_ident(
+                &aggregate.arguments[0],
+                &syn::Ident::new(&edge_value, proc_macro2::Span::call_site()),
+            )
+        {
+            return None;
+        }
+        (
+            RecursiveAggregateMode::Weighted,
+            flowlog_fp::unary(
+                "row_to_kv",
+                edge_relation_fingerprint,
+                [TransformationArgument::KV((false, 0))],
+                [
+                    TransformationArgument::KV((false, 1)),
+                    TransformationArgument::KV((false, 2)),
+                ],
+            ),
+            flowlog_fp::unary(
+                "row_to_kv",
+                head_relation_fingerprint,
+                [TransformationArgument::KV((false, 0))],
+                [TransformationArgument::KV((false, 1))],
+            ),
+            vec![
+                crate::flowlog_analysis::flowlog_variable(TransformationArgument::Jn((
+                    false, false, 0,
+                ))),
+                flowlog_fp::ArithmeticArgument {
+                    init: flowlog_fp::FactorArgument::Var(TransformationArgument::Jn((
+                        true, false, 0,
+                    ))),
+                    rest: vec![(
+                        flowlog_fp::ArithmeticOperator::Plus,
+                        flowlog_fp::FactorArgument::Var(TransformationArgument::Jn((
+                            false, false, 1,
+                        ))),
+                    )],
+                },
+            ],
+        )
+    };
+    let join_fingerprint = flowlog_fp::join_expressions(
+        "jn_to_row",
+        recursive_fingerprint,
+        edge_fingerprint,
+        Vec::new(),
+        join_values,
+        Vec::new(),
+    );
+    let mut graph = Plan::default();
+    let head_input = graph.add_node(RELATION_INPUT, []);
+    let edge_input = graph.add_node(RELATION_INPUT, []);
+    let node = graph.add_node(RECURSIVE_AGGREGATE, [head_input, edge_input]);
+    graph.facts_mut().insert(RecursiveAggregatePlan {
+        node,
+        head_relation: head_relation.clone(),
+        edge_relation: edge_relation.clone(),
+        mode,
+        minimum: operator == "min",
+        aggregate_i64: matches!(aggregate_type, flowlog_fp::DataType::Int64),
+        edge_fingerprint,
+        recursive_fingerprint,
+        join_fingerprint,
+        next_fingerprint: head_relation_fingerprint,
     });
     Some(SccPlan::from_graph(graph, node))
 }
