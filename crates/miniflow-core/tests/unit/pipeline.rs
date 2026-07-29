@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use quote::quote;
@@ -48,4 +49,48 @@ fn an_external_layer_can_replace_a_standard_physical_plan() {
         .to_string();
 
     assert!(expansion.contains("__miniflow_rule_0"));
+}
+
+#[test]
+fn an_external_layer_can_inspect_complete_physical_topology() {
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let capture = Rc::clone(&observed);
+    let mut compiler = Compiler::new().unwrap();
+    compiler
+        .registry_mut()
+        .around::<PlanRule, _>(move |context, request, next| {
+            let plan = next.call(context, request)?;
+            *capture.borrow_mut() = plan
+                .graph()
+                .nodes()
+                .iter()
+                .map(|node| {
+                    (
+                        node.operator().name(),
+                        node.inputs()
+                            .iter()
+                            .map(|input| input.index())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            Ok(plan)
+        });
+
+    compiler
+        .compile(quote! {
+            struct Program;
+            relation edge(i32, i32);
+            relation path(i32, i32);
+            path(x, y) <-- edge(x, y);
+        })
+        .unwrap();
+
+    assert_eq!(
+        *observed.borrow(),
+        [
+            ("miniflow.flowlog.relation-input", vec![]),
+            ("miniflow.flowlog.single.identity", vec![0]),
+        ]
+    );
 }

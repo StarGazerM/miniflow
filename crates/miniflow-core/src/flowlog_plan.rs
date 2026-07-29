@@ -573,7 +573,8 @@ fn plan_single_atom(request: &RuleRequest) -> Option<RulePlan> {
     );
 
     let mut graph = Plan::default();
-    let node = graph.add_node(operator, []);
+    let input = graph.add_node(RELATION_INPUT, []);
+    let node = graph.add_node(operator, [input]);
     graph.facts_mut().insert(SingleAtomPlan {
         node,
         source: source.clone(),
@@ -670,7 +671,8 @@ fn plan_direct_aggregate(request: &RuleRequest) -> Option<RulePlan> {
         && source_relation.columns.len() == target_relation.columns.len();
 
     let mut graph = Plan::default();
-    let node = graph.add_node(DIRECT_AGGREGATE, []);
+    let input = graph.add_node(RELATION_INPUT, []);
+    let node = graph.add_node(DIRECT_AGGREGATE, [input]);
     graph.facts_mut().insert(DirectAggregatePlan {
         node,
         aggregate: aggregate.clone(),
