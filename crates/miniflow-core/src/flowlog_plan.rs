@@ -73,6 +73,9 @@ pub const MUTUAL_UNARY: OperatorKey = OperatorKey::new("miniflow.flowlog.mutual-
 pub const RECURSIVE_AGGREGATE: OperatorKey =
     OperatorKey::new("miniflow.flowlog.recursive-aggregate");
 
+/// FlowLog-compatible unary or binary recursive join region.
+pub const RECURSIVE_JOIN: OperatorKey = OperatorKey::new("miniflow.flowlog.recursive-join");
+
 /// Physical facts needed to render one FlowLog-compatible unary rule.
 #[derive(Clone)]
 pub struct SingleAtomPlan {
@@ -630,6 +633,38 @@ pub struct RecursiveAggregatePlan {
     pub next_fingerprint: u64,
 }
 
+/// Physical row layout used by recursive transitive joins.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecursiveJoinMode {
+    /// A unary frontier follows a binary edge.
+    Unary,
+    /// A binary frontier extends its second column through a binary edge.
+    Binary,
+}
+
+/// Physical facts needed to render a recursive join region.
+#[derive(Clone)]
+pub struct RecursiveJoinPlan {
+    /// Physical operator node described by these facts.
+    pub node: NodeId,
+    /// Resolved recursive output relation.
+    pub head_relation: Relation,
+    /// Resolved nonrecursive edge relation.
+    pub edge_relation: Relation,
+    /// Row-layout variant selected by planning.
+    pub mode: RecursiveJoinMode,
+    /// Edge arrangement transformation fingerprint.
+    pub edge_fingerprint: u64,
+    /// Recursive arrangement transformation fingerprint.
+    pub recursive_fingerprint: u64,
+    /// Join transformation fingerprint.
+    pub join_fingerprint: u64,
+    /// Recursive relation fingerprint used for the next binding.
+    pub next_fingerprint: u64,
+    /// Whether deterministic declaration order enters the head before the edge.
+    pub enter_head_first: bool,
+}
+
 pub(crate) fn install(registry: &mut Registry) {
     registry.around::<PlanRule, _>(|context, request, next| {
         if let Some(plan) = plan_three_atom_join(&request)
@@ -648,6 +683,7 @@ pub(crate) fn install(registry: &mut Registry) {
         if let Some(plan) = plan_symmetric_closure(&request)
             .or_else(|| plan_mutual_unary(&request))
             .or_else(|| plan_recursive_aggregate(&request))
+            .or_else(|| plan_recursive_join(&request))
         {
             Ok(plan)
         } else {
@@ -1083,6 +1119,140 @@ fn plan_recursive_aggregate(request: &SccRequest) -> Option<SccPlan> {
         next_fingerprint: head_relation_fingerprint,
     });
     Some(SccPlan::from_graph(graph, node))
+}
+
+fn plan_recursive_join(request: &SccRequest) -> Option<SccPlan> {
+    let [rule_index] = request.scc().rules.as_slice() else {
+        return None;
+    };
+    let rule = &request.catalog().rules()[*rule_index];
+    let [head] = rule.heads.as_slice() else {
+        return None;
+    };
+    let [BodyItem::Atom(recursive_atom), BodyItem::Atom(edge_atom)] = rule.body.as_slice() else {
+        return None;
+    };
+    let head_relation = request.catalog().relation(head.relation);
+    let edge_relation = request.catalog().relation(edge_atom.relation);
+    if recursive_atom.relation != head.relation
+        || edge_relation.columns.len() != 2
+        || !request.initialized().contains(&head.relation)
+    {
+        return None;
+    }
+
+    let edge_relation_fingerprint = flowlog_fp::relation(&relation_fingerprint_name(edge_relation));
+    let head_relation_fingerprint = flowlog_fp::relation(&relation_fingerprint_name(head_relation));
+    let edge_fingerprint = flowlog_fp::unary(
+        "row_to_kv",
+        edge_relation_fingerprint,
+        [TransformationArgument::KV((false, 0))],
+        [TransformationArgument::KV((false, 1))],
+    );
+    let (mode, recursive_fingerprint, join_fingerprint) = recursive_join_shape(
+        head,
+        recursive_atom,
+        edge_atom,
+        head_relation.columns.len(),
+        head_relation_fingerprint,
+        edge_fingerprint,
+    )?;
+
+    let mut graph = Plan::default();
+    let head_input = graph.add_node(RELATION_INPUT, []);
+    let edge_input = graph.add_node(RELATION_INPUT, []);
+    let node = graph.add_node(RECURSIVE_JOIN, [head_input, edge_input]);
+    graph.facts_mut().insert(RecursiveJoinPlan {
+        node,
+        head_relation: head_relation.clone(),
+        edge_relation: edge_relation.clone(),
+        mode,
+        edge_fingerprint,
+        recursive_fingerprint,
+        join_fingerprint,
+        next_fingerprint: head_relation_fingerprint,
+        enter_head_first: head_relation_fingerprint < edge_fingerprint,
+    });
+    Some(SccPlan::from_graph(graph, node))
+}
+
+fn recursive_join_shape(
+    head: &Atom,
+    recursive_atom: &Atom,
+    edge_atom: &Atom,
+    head_arity: usize,
+    head_fingerprint: u64,
+    edge_fingerprint: u64,
+) -> Option<(RecursiveJoinMode, u64, u64)> {
+    match head_arity {
+        1 => {
+            let recursive_variable = variable_name(&recursive_atom.arguments[0])?;
+            let edge_key = variable_name(&edge_atom.arguments[0])?;
+            let edge_value = variable_name(&edge_atom.arguments[1])?;
+            let head_variable = variable_name(&head.arguments[0])?;
+            if recursive_variable != edge_key
+                || edge_value != head_variable
+                || recursive_variable == edge_value
+            {
+                return None;
+            }
+            let recursive_fingerprint = flowlog_fp::unary(
+                "row_to_kv",
+                head_fingerprint,
+                [TransformationArgument::KV((false, 0))],
+                [],
+            );
+            Some((
+                RecursiveJoinMode::Unary,
+                recursive_fingerprint,
+                flowlog_fp::join(
+                    "jn_to_row",
+                    recursive_fingerprint,
+                    edge_fingerprint,
+                    [],
+                    [TransformationArgument::Jn((false, false, 0))],
+                ),
+            ))
+        }
+        2 => {
+            let recursive_source = variable_name(&recursive_atom.arguments[0])?;
+            let recursive_middle = variable_name(&recursive_atom.arguments[1])?;
+            let edge_middle = variable_name(&edge_atom.arguments[0])?;
+            let edge_destination = variable_name(&edge_atom.arguments[1])?;
+            let head_source = variable_name(&head.arguments[0])?;
+            let head_destination = variable_name(&head.arguments[1])?;
+            if recursive_source != head_source
+                || recursive_middle != edge_middle
+                || edge_destination != head_destination
+                || recursive_source == recursive_middle
+                || recursive_source == edge_destination
+                || recursive_middle == edge_destination
+            {
+                return None;
+            }
+            let recursive_fingerprint = flowlog_fp::unary(
+                "row_to_kv",
+                head_fingerprint,
+                [TransformationArgument::KV((false, 1))],
+                [TransformationArgument::KV((false, 0))],
+            );
+            Some((
+                RecursiveJoinMode::Binary,
+                recursive_fingerprint,
+                flowlog_fp::join(
+                    "jn_to_row",
+                    recursive_fingerprint,
+                    edge_fingerprint,
+                    [],
+                    [
+                        TransformationArgument::Jn((true, false, 0)),
+                        TransformationArgument::Jn((false, false, 0)),
+                    ],
+                ),
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn plan_single_atom(request: &RuleRequest) -> Option<RulePlan> {

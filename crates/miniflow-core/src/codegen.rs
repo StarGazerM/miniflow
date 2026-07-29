@@ -11,13 +11,13 @@ use crate::flowlog_analysis::{
     flowlog_data_type, variable_name,
 };
 use crate::flowlog_fp;
-use crate::flowlog_fp::TransformationArgument;
 use crate::flowlog_plan::{
     BINARY_JOIN, BinaryJoinPlan, DIRECT_AGGREGATE, DirectAggregatePlan, JoinSidePlan, MUTUAL_UNARY,
-    MutualUnaryPlan, RECURSIVE_AGGREGATE, RecursiveAggregateMode, RecursiveAggregatePlan,
-    SINGLE_FILTER, SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP, SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE,
-    SYMMETRIC_CLOSURE, SingleAtomPlan, SymmetricClosurePlan, THREE_ATOM_JOIN, TUPLE_EQUIJOIN,
-    ThreeAtomJoinPlan, TupleEquijoinPlan, UNARY_ANTIJOIN, UnaryAntijoinPlan, UnaryAntijoinStage,
+    MutualUnaryPlan, RECURSIVE_AGGREGATE, RECURSIVE_JOIN, RecursiveAggregateMode,
+    RecursiveAggregatePlan, RecursiveJoinMode, RecursiveJoinPlan, SINGLE_FILTER,
+    SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP, SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE, SYMMETRIC_CLOSURE,
+    SingleAtomPlan, SymmetricClosurePlan, THREE_ATOM_JOIN, TUPLE_EQUIJOIN, ThreeAtomJoinPlan,
+    TupleEquijoinPlan, UNARY_ANTIJOIN, UnaryAntijoinPlan, UnaryAntijoinStage,
 };
 use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId, Scc};
 use crate::pipeline::{PlanRule, PlanScc, PlanningCatalog, RuleRequest, SccRequest};
@@ -1207,11 +1207,7 @@ impl HirProgram {
             initialized.insert(target);
             return Ok(emitted);
         }
-        if let Some((target, emitted)) = self.emit_flowlog_unary_recursive_join(scc, initialized) {
-            initialized.insert(target);
-            return Ok(emitted);
-        }
-        if let Some((target, emitted)) = self.emit_flowlog_binary_recursive_join(scc, initialized) {
+        if let Some((target, emitted)) = Self::render_flowlog_recursive_join(&planned) {
             initialized.insert(target);
             return Ok(emitted);
         }
@@ -1793,75 +1789,26 @@ impl HirProgram {
         ))
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn emit_flowlog_unary_recursive_join(
-        &self,
-        scc: &Scc,
-        initialized: &BTreeSet<RelationId>,
-    ) -> Option<(RelationId, TokenStream)> {
-        let [rule_index] = scc.rules.as_slice() else {
-            return None;
-        };
-        let rule = &self.rules[*rule_index];
-        let [head] = rule.heads.as_slice() else {
-            return None;
-        };
-        let [BodyItem::Atom(recursive_atom), BodyItem::Atom(edge_atom)] = rule.body.as_slice()
-        else {
-            return None;
-        };
-        let recursive_relation = &self.relations[recursive_atom.relation.0];
-        let edge_relation = &self.relations[edge_atom.relation.0];
-        let head_relation = &self.relations[head.relation.0];
-        if recursive_atom.relation != head.relation
-            || recursive_relation.columns.len() != 1
-            || edge_relation.columns.len() != 2
-            || head_relation.columns.len() != 1
-            || !initialized.contains(&head.relation)
-        {
+    fn render_flowlog_recursive_join(plan: &SccPlan) -> Option<(RelationId, TokenStream)> {
+        let root = plan.root();
+        if plan.graph().nodes().get(root.index())?.operator() != RECURSIVE_JOIN {
             return None;
         }
-        let recursive_variable = variable_name(&recursive_atom.arguments[0])?;
-        let edge_key = variable_name(&edge_atom.arguments[0])?;
-        let edge_value = variable_name(&edge_atom.arguments[1])?;
-        let head_variable = variable_name(&head.arguments[0])?;
-        if recursive_variable != edge_key
-            || edge_value != head_variable
-            || recursive_variable == edge_value
-        {
-            return None;
-        }
-
-        let edge_name = flowlog_relation_fingerprint_name(edge_relation);
-        let head_name = flowlog_relation_fingerprint_name(head_relation);
-        let edge_plan = flowlog_fp::unary(
-            "row_to_kv",
-            flowlog_fp::relation(&edge_name),
-            [TransformationArgument::KV((false, 0))],
-            [TransformationArgument::KV((false, 1))],
-        );
-        let recursive_plan = flowlog_fp::unary(
-            "row_to_kv",
-            flowlog_fp::relation(&head_name),
-            [TransformationArgument::KV((false, 0))],
-            [],
-        );
-        let join_plan = flowlog_fp::join(
-            "jn_to_row",
-            recursive_plan,
-            edge_plan,
-            [],
-            [TransformationArgument::Jn((false, false, 0))],
-        );
-        let next_plan = flowlog_fp::relation(&head_name);
-
-        let edge_transform = format_ident!("t_{edge_plan}");
-        let edge_arrangement = format_ident!("t_{edge_plan}_arr");
-        let entered_edge_arrangement = format_ident!("in_t_{edge_plan}_arr");
-        let recursive_transform = format_ident!("t_{recursive_plan}");
-        let recursive_arrangement = format_ident!("t_{recursive_plan}_arr");
-        let join_transform = format_ident!("t_{join_plan}");
-        let next = format_ident!("next_{next_plan}");
+        let physical = plan
+            .graph()
+            .facts()
+            .relation::<RecursiveJoinPlan>()
+            .iter()
+            .find(|physical| physical.node == root)?;
+        let head_relation = &physical.head_relation;
+        let edge_relation = &physical.edge_relation;
+        let edge_transform = format_ident!("t_{}", physical.edge_fingerprint);
+        let edge_arrangement = format_ident!("t_{}_arr", physical.edge_fingerprint);
+        let entered_edge_arrangement = format_ident!("in_t_{}_arr", physical.edge_fingerprint);
+        let recursive_transform = format_ident!("t_{}", physical.recursive_fingerprint);
+        let recursive_arrangement = format_ident!("t_{}_arr", physical.recursive_fingerprint);
+        let join_transform = format_ident!("t_{}", physical.join_fingerprint);
+        let next = format_ident!("next_{}", physical.next_fingerprint);
 
         let edge_collection = collection_ident(edge_relation);
         let head_collection = collection_ident(head_relation);
@@ -1869,7 +1816,7 @@ impl HirProgram {
         let recursive_collection = inner_collection_ident(head_relation);
         let recursive_collection_variable = variable_ident(head_relation);
         let edge_type = tuple_type(edge_relation);
-        let enter = if next_plan < edge_plan {
+        let enter = if physical.enter_head_first {
             quote! {
                 let #entered_head = #head_collection.clone().enter(inner);
                 let #entered_edge_arrangement = #edge_arrangement.clone().enter(inner);
@@ -1880,142 +1827,40 @@ impl HirProgram {
                 let #entered_head = #head_collection.clone().enter(inner);
             }
         };
-
-        Some((
-            head.relation,
-            quote! {
-                let #edge_transform = #edge_collection
-                    .clone()
-                    .flat_map(|(x0, x1): #edge_type| {
-                        std::iter::once(((x0.clone(),), (x1.clone(),)))
-                });
-                let #edge_arrangement = #edge_transform.clone().arrange_by_key();
-                let #head_collection = scope.iterative::<Iter, _, _>(|inner| {
-                    #enter
-                    let (#recursive_collection_variable, #recursive_collection) = Variable::new(
-                        inner,
-                        timely::order::Product::new(Default::default(), 1),
-                    );
+        let (recursive_emission, recursive_arrangement_emission, join_row) = match physical.mode {
+            RecursiveJoinMode::Unary => (
+                quote! {
                     let #recursive_transform = #recursive_collection.clone();
+                },
+                quote! {
                     let #recursive_arrangement =
                         #recursive_transform.clone().arrange_by_self();
-                    let #join_transform = #recursive_arrangement.clone().join_core(
-                        #entered_edge_arrangement.clone(),
-                        |_k, _lv, rv| { Some((rv.0.clone(),)) },
-                    );
-                    let #next = #join_transform
-                        .clone()
-                        .concatenate([#entered_head.clone()])
-                        .threshold_semigroup(move |_, _, old| {
-                            old.is_none().then_some(SEMIRING_ONE)
-                        });
-                    #recursive_collection_variable.set(#next.clone());
-                    #next.leave(scope)
-                });
-            },
-        ))
-    }
-
-    #[allow(clippy::too_many_lines)]
-    fn emit_flowlog_binary_recursive_join(
-        &self,
-        scc: &Scc,
-        initialized: &BTreeSet<RelationId>,
-    ) -> Option<(RelationId, TokenStream)> {
-        let [rule_index] = scc.rules.as_slice() else {
-            return None;
-        };
-        let rule = &self.rules[*rule_index];
-        let [head] = rule.heads.as_slice() else {
-            return None;
-        };
-        let [BodyItem::Atom(recursive_atom), BodyItem::Atom(edge_atom)] = rule.body.as_slice()
-        else {
-            return None;
-        };
-        let recursive_relation = &self.relations[recursive_atom.relation.0];
-        let edge_relation = &self.relations[edge_atom.relation.0];
-        let head_relation = &self.relations[head.relation.0];
-        if recursive_atom.relation != head.relation
-            || recursive_relation.columns.len() != 2
-            || edge_relation.columns.len() != 2
-            || head_relation.columns.len() != 2
-            || !initialized.contains(&head.relation)
-        {
-            return None;
-        }
-
-        let recursive_source = variable_name(&recursive_atom.arguments[0])?;
-        let recursive_middle = variable_name(&recursive_atom.arguments[1])?;
-        let edge_middle = variable_name(&edge_atom.arguments[0])?;
-        let edge_destination = variable_name(&edge_atom.arguments[1])?;
-        let head_source = variable_name(&head.arguments[0])?;
-        let head_destination = variable_name(&head.arguments[1])?;
-        if recursive_source != head_source
-            || recursive_middle != edge_middle
-            || edge_destination != head_destination
-            || recursive_source == recursive_middle
-            || recursive_source == edge_destination
-            || recursive_middle == edge_destination
-        {
-            return None;
-        }
-
-        let edge_name = flowlog_relation_fingerprint_name(edge_relation);
-        let head_name = flowlog_relation_fingerprint_name(head_relation);
-        let edge_plan = flowlog_fp::unary(
-            "row_to_kv",
-            flowlog_fp::relation(&edge_name),
-            [TransformationArgument::KV((false, 0))],
-            [TransformationArgument::KV((false, 1))],
-        );
-        let recursive_plan = flowlog_fp::unary(
-            "row_to_kv",
-            flowlog_fp::relation(&head_name),
-            [TransformationArgument::KV((false, 1))],
-            [TransformationArgument::KV((false, 0))],
-        );
-        let join_plan = flowlog_fp::join(
-            "jn_to_row",
-            recursive_plan,
-            edge_plan,
-            [],
-            [
-                TransformationArgument::Jn((true, false, 0)),
-                TransformationArgument::Jn((false, false, 0)),
-            ],
-        );
-        let next_plan = flowlog_fp::relation(&head_name);
-
-        let edge_transform = format_ident!("t_{edge_plan}");
-        let edge_arrangement = format_ident!("t_{edge_plan}_arr");
-        let entered_edge_arrangement = format_ident!("in_t_{edge_plan}_arr");
-        let recursive_transform = format_ident!("t_{recursive_plan}");
-        let recursive_arrangement = format_ident!("t_{recursive_plan}_arr");
-        let join_transform = format_ident!("t_{join_plan}");
-        let next = format_ident!("next_{next_plan}");
-
-        let edge_collection = collection_ident(edge_relation);
-        let head_collection = collection_ident(head_relation);
-        let entered_head = inner_base_ident(head_relation);
-        let recursive_collection = inner_collection_ident(head_relation);
-        let recursive_collection_variable = variable_ident(head_relation);
-        let edge_type = tuple_type(edge_relation);
-        let head_type = tuple_type(head_relation);
-        let enter = if next_plan < edge_plan {
-            quote! {
-                let #entered_head = #head_collection.clone().enter(inner);
-                let #entered_edge_arrangement = #edge_arrangement.clone().enter(inner);
-            }
-        } else {
-            quote! {
-                let #entered_edge_arrangement = #edge_arrangement.clone().enter(inner);
-                let #entered_head = #head_collection.clone().enter(inner);
+                },
+                quote! { |_k, _lv, rv| { Some((rv.0.clone(),)) } },
+            ),
+            RecursiveJoinMode::Binary => {
+                let head_type = tuple_type(head_relation);
+                (
+                    quote! {
+                        let #recursive_transform = #recursive_collection
+                            .clone()
+                            .flat_map(|(x0, x1): #head_type| {
+                                std::iter::once(((x1.clone(),), (x0.clone(),)))
+                            });
+                    },
+                    quote! {
+                        let #recursive_arrangement =
+                            #recursive_transform.clone().arrange_by_key();
+                    },
+                    quote! {
+                        |_k, lv, rv| { Some((lv.0.clone(), rv.0.clone())) }
+                    },
+                )
             }
         };
 
         Some((
-            head.relation,
+            head_relation.id,
             quote! {
                 let #edge_transform = #edge_collection
                     .clone()
@@ -2029,19 +1874,11 @@ impl HirProgram {
                         inner,
                         timely::order::Product::new(Default::default(), 1),
                     );
-                    let #recursive_transform = #recursive_collection
-                        .clone()
-                        .flat_map(|(x0, x1): #head_type| {
-                            std::iter::once(((x1.clone(),), (x0.clone(),)))
-                        });
-                    let #recursive_arrangement =
-                        #recursive_transform.clone().arrange_by_key();
+                    #recursive_emission
+                    #recursive_arrangement_emission
                     let #join_transform = #recursive_arrangement
                         .clone()
-                        .join_core(
-                            #entered_edge_arrangement.clone(),
-                            |_k, lv, rv| { Some((lv.0.clone(), rv.0.clone())) },
-                        );
+                        .join_core(#entered_edge_arrangement.clone(), #join_row);
                     let #next = #join_transform
                         .clone()
                         .concatenate([#entered_head.clone()])
