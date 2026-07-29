@@ -5,8 +5,8 @@ crate::fixture_program! {
     relation mk((i32, i32));
     relation out(i32, i32);
 
-    mk((a, b)) <-- base(a, b);
-    out(value, tag) <--
+    mk((a, b)) :- base(a, b);
+    out(value, tag) :-
         mk(context),
         val(value, tag),
         if context.0 == *value;

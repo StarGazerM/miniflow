@@ -4,9 +4,9 @@ crate::fixture_program! {
     relation tc(i32, i32);
     relation in__cycle(i32);
 
-    tc(x, y) <-- edge(x, y);
-    tc(x, y) <-- tc(x, z), edge(z, y);
-    in__cycle(x) <-- tc(x, x);
+    tc(x, y) :- edge(x, y);
+    tc(x, y) :- tc(x, z), edge(z, y);
+    in__cycle(x) :- tc(x, x);
 }
 
 crate::fixture_io! {

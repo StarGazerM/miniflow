@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -29,11 +29,11 @@ miniflow! {
     relation flow(Instr, Context, Instr, Context);
     relation res(Res);
 
-    flow(i1, c1, i2, c2) <-- succ(i1, c1, i2, c2);
-    flow(i1, c1, i3, c3) <-- flow(i1, c1, i2, c2), flow(i2, c2, i3, c3);
-    res(Res::Ok) <--
+    flow(i1, c1, i2, c2) :- succ(i1, c1, i2, c2);
+    flow(i1, c1, i3, c3) :- flow(i1, c1, i2, c2), flow(i2, c2, i3, c3);
+    res(Res::Ok) :-
         flow(Instr::new("w1"), Context::new("c1"), Instr::new("r2"), Context::new("c1"));
-    res(Res::Err) <--
+    res(Res::Err) :-
         flow(Instr::new("w1"), Context::new("c1"), Instr::new("r2"), Context::new("c2"));
 }
 

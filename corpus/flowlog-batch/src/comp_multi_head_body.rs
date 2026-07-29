@@ -9,13 +9,13 @@ crate::fixture_program! {
     relation g__rev(String, String);
     relation g__reach(String, String);
 
-    g__rev(y, x) <-- edge(x, y);
-    g__fwd(x, y) <-- edge(x, y);
-    g__reach(x, y) <-- g__fwd(x, y);
-    g__reach(x, y) <-- g__reach(x, z), g__fwd(z, y);
-    fwd(x, y) <-- g__fwd(x, y);
-    rev(x, y) <-- g__rev(x, y);
-    reach(x, y) <-- g__reach(x, y);
+    g__rev(y, x) :- edge(x, y);
+    g__fwd(x, y) :- edge(x, y);
+    g__reach(x, y) :- g__fwd(x, y);
+    g__reach(x, y) :- g__reach(x, z), g__fwd(z, y);
+    fwd(x, y) :- g__fwd(x, y);
+    rev(x, y) :- g__rev(x, y);
+    reach(x, y) :- g__reach(x, y);
 }
 
 crate::fixture_io! {

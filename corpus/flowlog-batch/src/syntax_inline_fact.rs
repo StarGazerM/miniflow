@@ -4,8 +4,8 @@ crate::fixture_program! {
     relation reach(i32, i32);
 
     edge(3, 4);
-    reach(x, y) <-- edge(x, y);
-    reach(x, z) <-- reach(x, y), edge(y, z);
+    reach(x, y) :- edge(x, y);
+    reach(x, z) :- reach(x, y), edge(y, z);
 }
 
 crate::fixture_io! {

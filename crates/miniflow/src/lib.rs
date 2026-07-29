@@ -1,8 +1,6 @@
-//! Embedded batch Datalog over Timely and Differential Dataflow.
+//! Runtime facade for generated `MiniFlow` programs.
 
 extern crate self as miniflow;
-
-pub use miniflow_macro::miniflow;
 
 mod semiring;
 

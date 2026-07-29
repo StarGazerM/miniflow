@@ -4,8 +4,8 @@ crate::fixture_program! {
     relation sink(String);
     relation a__r(String);
 
-    a__r(context) <-- src(context);
-    sink(context) <-- a__r(context);
+    a__r(context) :- src(context);
+    sink(context) :- a__r(context);
 }
 
 crate::fixture_io! {

@@ -2,7 +2,7 @@
 
 use harness::*;
 
-miniflow::miniflow! {
+miniflow_macro::miniflow! {
     #![flowlog_batch]
     #![output(sssp)]
 
@@ -13,11 +13,11 @@ miniflow::miniflow! {
     relation sssp(i32, i32);
 
     // sssp(x, min(0)) :- id(x).
-    sssp(x, minimum) <--
+    sssp(x, minimum) :-
         agg minimum = min(0) in id(x);
 
     // sssp(y, min(d1 + d2)) :- sssp(x, d1), arc(x, y, d2).
-    sssp(y, minimum) <--
+    sssp(y, minimum) :-
         sssp(x, distance),
         agg minimum = min(*distance + *weight) in arc(x, y, weight);
 }

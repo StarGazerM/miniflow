@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use harness::*;
 
-miniflow::miniflow! {
+miniflow_macro::miniflow! {
     #![flowlog_batch]
     #![output(q2)]
 
@@ -19,7 +19,7 @@ miniflow::miniflow! {
     relation param(i64, String);
     relation q2(i64, String, String, i64, String, String);
 
-    q2(person_id, first_name, last_name, message_id, content, creation_date) <--
+    q2(person_id, first_name, last_name, message_id, content, creation_date) :-
         param(source_id, max_date),
         knows(source_id, person_id, _),
         comment_has_creator(message_id, person_id),
@@ -27,7 +27,7 @@ miniflow::miniflow! {
         person(person_id, first_name, last_name, _, _, _, _, _),
         if creation_date < max_date;
 
-    q2(person_id, first_name, last_name, message_id, image_file, creation_date) <--
+    q2(person_id, first_name, last_name, message_id, image_file, creation_date) :-
         param(source_id, max_date),
         knows(source_id, person_id, _),
         post_has_creator(message_id, person_id),
@@ -36,7 +36,7 @@ miniflow::miniflow! {
         if !image_file.is_empty(),
         if creation_date < max_date;
 
-    q2(person_id, first_name, last_name, message_id, content, creation_date) <--
+    q2(person_id, first_name, last_name, message_id, content, creation_date) :-
         param(source_id, max_date),
         knows(source_id, person_id, _),
         post_has_creator(message_id, person_id),

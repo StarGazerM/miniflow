@@ -5,10 +5,10 @@ crate::fixture_program! {
     relation full(i32, String);
     relation greeting(i32, String);
 
-    full(id, cat(first_name, cat(" ", last_name))) <--
+    full(id, cat(first_name, cat(" ", last_name))) :-
         first(id, first_name),
         last(id, last_name);
-    greeting(id, cat("Hello ", name)) <-- first(id, name);
+    greeting(id, cat("Hello ", name)) :- first(id, name);
 }
 
 crate::fixture_io! {

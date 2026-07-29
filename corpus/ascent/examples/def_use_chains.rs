@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 use serde::{Deserialize, Serialize};
 
 macro_rules! name_type {
@@ -33,9 +33,9 @@ miniflow! {
     relation flow(Instr, Instr);
     relation def_use(Write, Read);
 
-    flow(x, y) <-- succ(x, y);
-    flow(x, z) <-- flow(x, y), flow(y, z);
-    def_use(w, r) <--
+    flow(x, y) :- succ(x, y);
+    flow(x, z) :- flow(x, y), flow(y, z);
+    def_use(w, r) :-
         write(w, variable),
         read(r, variable),
         let write_instruction = Instr::Write(w.clone()),

@@ -9,11 +9,11 @@ crate::fixture_program! {
     relation reach(i32, i32, i32);
     relation closest(i32, i32, i32);
 
-    reach(source_id, source_id, 0) <-- source(source_id);
-    reach(source_id, destination, minimum) <--
+    reach(source_id, source_id, 0) :- source(source_id);
+    reach(source_id, destination, minimum) :-
         reach(source_id, middle, distance),
         agg minimum = min(*distance + 1) in edge(middle, destination);
-    closest(source_id, destination, distance) <-- reach(source_id, destination, distance);
+    closest(source_id, destination, distance) :- reach(source_id, destination, distance);
 }
 
 struct FnvHasher(u64);

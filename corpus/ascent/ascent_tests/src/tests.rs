@@ -1,6 +1,6 @@
 #![allow(clippy::cast_possible_truncation)]
 
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     #![profile]
@@ -18,7 +18,7 @@ miniflow! {
     option(1, None);
     option(2, Some(2));
     option(3, Some(30));
-    selected(x, y) <-- option(x, value), if let Some(y) = value, if y != x;
+    selected(x, y) :- option(x, value), if let Some(y) = value, if y != x;
 
     first(1, 2);
     first(10, 20);
@@ -30,13 +30,13 @@ miniflow! {
     second(1, 1);
     second(1, 2);
     second(1, 3);
-    joined(x, y + z) <-- first(x, y), if *x != 0, second(y, z);
-    cross(a, b, c, d) <-- first(a, b), second(c, d);
+    joined(x, y + z) :- first(x, y), if *x != 0, second(y, z);
+    cross(a, b, c, d) :- first(a, b), second(c, d);
 
-    repeated(x) <-- second(x, x);
+    repeated(x) :- second(x, x);
     ternary(1, 2, 3);
     ternary(2, 3, 4);
-    wildcard_result(x) <-- ternary(x, _, _), second(_, x);
+    wildcard_result(x) :- ternary(x, _, _), second(_, x);
 }
 
 miniflow! {
@@ -47,14 +47,14 @@ miniflow! {
     relation left(Vec<i32>);
     relation right(Vec<i32>);
 
-    pair(x, y) <-- pair(0, 1), for x in 0..10, for y in (x + 1)..10;
+    pair(x, y) :- pair(0, 1), for x in 0..10, for y in (x + 1)..10;
     pair(0, 1);
-    endpoint(x), endpoint(y) <-- pair(x, y);
+    endpoint(x), endpoint(y) :- pair(x, y);
 
     vectors(vec![3], vec![4]);
     vectors(vec![1, 2], vec![4, 5]);
     vectors(vec![10, 11], vec![20]);
-    left(x.clone()), right(y.clone()) <-- vectors(x, y), if x.len() > 1;
+    left(x.clone()), right(y.clone()) :- vectors(x, y), if x.len() > 1;
 }
 
 miniflow! {
@@ -65,10 +65,10 @@ miniflow! {
     relation transitive(bool);
     relation closure(i32, i32);
 
-    closure(x, y) <-- edge(x, y);
-    closure(y, x) <-- symmetric(true), closure(x, y);
-    closure(x, x), closure(y, y) <-- reflexive(true), closure(x, y);
-    closure(x, z) <-- transitive(true), closure(x, y), closure(y, z);
+    closure(x, y) :- edge(x, y);
+    closure(y, x) :- symmetric(true), closure(x, y);
+    closure(x, x), closure(y, y) :- reflexive(true), closure(x, y);
+    closure(x, z) :- transitive(true), closure(x, y), closure(y, z);
 }
 
 miniflow! {
@@ -77,9 +77,9 @@ miniflow! {
     relation factorial(u64, u64);
 
     calculate(10);
-    calculate(x - 1) <-- calculate(x), if *x > 0;
-    factorial(0, 1) <-- calculate(0);
-    factorial(x, x * previous) <--
+    calculate(x - 1) :- calculate(x), if *x > 0;
+    factorial(0, 1) :- calculate(0);
+    factorial(x, x * previous) :-
         calculate(x),
         if *x > 0,
         factorial(x - 1, previous);
@@ -95,8 +95,8 @@ miniflow! {
     foo(10, 2);
     bar(2, 3);
     bar(2, 1);
-    baz(x, z) <-- foo(x, y), if *x != 10, bar(y, z), if x != z;
-    foo(x, y), bar(x, y) <-- baz(x, y);
+    baz(x, z) :- foo(x, y), if *x != 10, bar(y, z), if x != z;
+    foo(x, y), bar(x, y) :- baz(x, y);
 }
 
 miniflow! {
@@ -109,7 +109,7 @@ miniflow! {
     foo(2, 3);
     bar(1, 2, 10);
     bar(1, 2, 100);
-    baz(x, y, minimum) <--
+    baz(x, y, minimum) :-
         foo(x, y),
         agg minimum = min(value) in bar(x, y, value);
 }
@@ -120,9 +120,9 @@ miniflow! {
     relation path(i32, i32, u32);
     relation shortest(i32, i32, u32);
 
-    path(x, y, weight) <-- edge(x, y, weight);
-    path(x, z, weight + suffix) <-- edge(x, y, weight), path(y, z, suffix);
-    shortest(x, y, minimum) <--
+    path(x, y, weight) :- edge(x, y, weight);
+    path(x, z, weight + suffix) :- edge(x, y, weight), path(y, z, suffix);
+    shortest(x, y, minimum) :-
         path(x, y, _),
         agg minimum = min(value) in path(x, y, value);
 }
@@ -134,10 +134,10 @@ miniflow! {
     relation legit(i32);
 
     legit(0);
-    edge(x, x + 1) <-- legit(0), for x in 0..9;
-    path(x, y) <-- edge(x, y), legit(x);
-    path(x, z) <-- edge(x, y), path(y, z), legit(x);
-    legit(y) <-- legit(x), path(x, y);
+    edge(x, x + 1) :- legit(0), for x in 0..9;
+    path(x, y) :- edge(x, y), legit(x);
+    path(x, z) :- edge(x, y), path(y, z), legit(x);
+    legit(y) :- legit(x), path(x, y);
 }
 
 miniflow! {
@@ -153,14 +153,14 @@ miniflow! {
     foo2(1, 2);
     foo1(10, 11);
     foo2(11, 12);
-    result(x, y) <-- foo2(x, y), foo1(x, x);
+    result(x, y) :- foo2(x, y), foo1(x, x);
 }
 
 miniflow! {
     struct MultipleDefinitions;
     relation first(usize);
     relation second(usize);
-    second(x) <-- first(x);
+    second(x) :- first(x);
 }
 
 pub const UPSTREAM_CASES: &[&str] = &[

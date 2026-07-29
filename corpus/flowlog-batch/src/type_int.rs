@@ -3,7 +3,7 @@ crate::fixture_program! {
     relation data(i8, i16, i32, i64);
     relation out(i8, i16, i32, i64);
 
-    out(a, b, c, d) <-- data(a, b, c, d);
+    out(a, b, c, d) :- data(a, b, c, d);
 }
 
 crate::fixture_io! {

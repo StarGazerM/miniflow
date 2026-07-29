@@ -15,13 +15,13 @@ crate::fixture_program! {
         name.chars().count() as i32,
         name.chars().take(2).collect::<String>(),
         ordinal,
-    ) <-- sample(name, _, ordinal);
-    has_a(name) <-- sample(name, _, _), if name.contains('a');
-    roundtrip(name, number.to_string().parse::<i32>().expect("integer roundtrip")) <--
+    ) :- sample(name, _, ordinal);
+    has_a(name) :- sample(name, _, _), if name.contains('a');
+    roundtrip(name, number.to_string().parse::<i32>().expect("integer roundtrip")) :-
         sample(name, number, _);
-    label(format!("name={} len={}", name, name.chars().count())) <--
+    label(format!("name={} len={}", name, name.chars().count())) :-
         sample(name, _, _);
-    long_name(name) <-- sample(name, _, _), if name.chars().count() > 4;
+    long_name(name) :- sample(name, _, _), if name.chars().count() > 4;
 }
 
 pub fn run(fixture_dir: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {

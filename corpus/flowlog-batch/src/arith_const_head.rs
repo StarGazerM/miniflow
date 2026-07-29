@@ -3,7 +3,7 @@ crate::fixture_program! {
     relation data(i32);
     relation with_tag(i32, i32);
 
-    with_tag(x, 42) <-- data(x);
+    with_tag(x, 42) :- data(x);
 }
 
 crate::fixture_io! {

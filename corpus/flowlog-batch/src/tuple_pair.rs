@@ -5,8 +5,8 @@ crate::fixture_program! {
     relation back(String, String);
 
     in_("p".to_owned(), "q".to_owned());
-    out((a, b)) <-- in_(a, b);
-    back(pair.0, pair.1) <-- out(pair);
+    out((a, b)) :- in_(a, b);
+    back(pair.0, pair.1) :- out(pair);
 }
 
 crate::fixture_io! {

@@ -4,7 +4,7 @@ crate::fixture_program! {
     relation salary(i32, i32);
     relation out(i32, String, i32);
 
-    out(id, name, amount) <-- employee(id, name), salary(id, amount);
+    out(id, name, amount) :- employee(id, name), salary(id, amount);
 }
 
 crate::fixture_io! {

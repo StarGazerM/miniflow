@@ -42,24 +42,24 @@ crate::fixture_program! {
     relation mixed(i32, i32);
     relation deep_wide(i32, i32);
 
-    depth2(id, udf::classify(udf::normalize(*reading1, *scale))) <--
+    depth2(id, udf::classify(udf::normalize(*reading1, *scale))) :-
         sensor(id, reading1, scale, _, _);
-    depth3(id, udf::classify(udf::normalize(udf::clamp(*reading1, 50, 250), *scale))) <--
+    depth3(id, udf::classify(udf::normalize(udf::clamp(*reading1, 50, 250), *scale))) :-
         sensor(id, reading1, scale, _, _);
     wide(id, udf::blend(
         udf::normalize(*reading1, *scale),
         udf::normalize(*reading2, *scale),
         *weight,
-    )) <-- sensor(id, reading1, scale, weight, reading2);
+    )) :- sensor(id, reading1, scale, weight, reading2);
     mixed(id, udf::abs_diff(
         udf::normalize(*reading1, *scale),
         udf::classify(udf::normalize(*reading2, *scale)),
-    )) <-- sensor(id, reading1, scale, _, reading2);
+    )) :- sensor(id, reading1, scale, _, reading2);
     deep_wide(id, udf::classify(udf::blend(
         udf::normalize(*reading1, *scale),
         udf::normalize(*reading2, *scale),
         *weight,
-    ))) <-- sensor(id, reading1, scale, weight, reading2);
+    ))) :- sensor(id, reading1, scale, weight, reading2);
 }
 
 crate::fixture_io! {

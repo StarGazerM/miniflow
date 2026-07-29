@@ -9,7 +9,7 @@ crate::fixture_program! {
     in_("b".to_owned(), "x".to_owned());
     in_("a".to_owned(), "z".to_owned());
     in_("a".to_owned(), "a".to_owned());
-    out((x, y)) <-- in_(x, y);
+    out((x, y)) :- in_(x, y);
 }
 
 pub fn run(_fixture_dir: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {

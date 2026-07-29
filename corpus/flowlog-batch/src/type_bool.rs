@@ -4,8 +4,8 @@ crate::fixture_program! {
     relation active_person(i32, String);
     relation inactive_person(i32, String);
 
-    active_person(id, name) <-- person(id, name, true);
-    inactive_person(id, name) <-- person(id, name, false);
+    active_person(id, name) :- person(id, name, true);
+    inactive_person(id, name) :- person(id, name, false);
 }
 
 crate::fixture_io! {

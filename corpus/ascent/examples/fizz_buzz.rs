@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     pub struct FizzBuzz;
@@ -9,12 +9,12 @@ miniflow! {
     relation fizz_buzz(isize);
     relation other(isize);
 
-    divisible(x, 3) <-- number(x), if x % 3 == 0;
-    divisible(x, 5) <-- number(x), if x % 5 == 0;
-    fizz(x) <-- number(x), divisible(x, 3), !divisible(x, 5);
-    buzz(x) <-- number(x), !divisible(x, 3), divisible(x, 5);
-    fizz_buzz(x) <-- number(x), divisible(x, 3), divisible(x, 5);
-    other(x) <-- number(x), !divisible(x, 3), !divisible(x, 5);
+    divisible(x, 3) :- number(x), if x % 3 == 0;
+    divisible(x, 5) :- number(x), if x % 5 == 0;
+    fizz(x) :- number(x), divisible(x, 3), !divisible(x, 5);
+    buzz(x) :- number(x), !divisible(x, 3), divisible(x, 5);
+    fizz_buzz(x) :- number(x), divisible(x, 3), divisible(x, 5);
+    other(x) :- number(x), !divisible(x, 3), !divisible(x, 5);
 }
 
 pub fn check() {

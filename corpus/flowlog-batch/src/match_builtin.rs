@@ -4,8 +4,8 @@ crate::fixture_program! {
     relation java_name(String);
     relation non_java_name(String);
 
-    java_name(value) <-- name(value), if value.starts_with("java");
-    non_java_name(value) <-- name(value), if !value.starts_with("java");
+    java_name(value) :- name(value), if value.starts_with("java");
+    non_java_name(value) :- name(value), if !value.starts_with("java");
 }
 
 pub fn run(

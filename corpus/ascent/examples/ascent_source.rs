@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     pub struct IncludedSource;
@@ -10,9 +10,9 @@ miniflow! {
     edge(3, 4);
 
     // `include_source!` is token composition; the semantic program is:
-    edge(x, y) <-- edge(y, x);
-    path(x, y) <-- edge(x, y);
-    path(x, z) <-- edge(x, y), path(y, z);
+    edge(x, y) :- edge(y, x);
+    path(x, y) :- edge(x, y);
+    path(x, z) :- edge(x, y), path(y, z);
 }
 
 pub fn check() {

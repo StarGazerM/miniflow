@@ -19,7 +19,7 @@ crate::fixture_program! {
     relation edge(i32, i32);
     relation hashed(i32, i32);
 
-    hashed(source, udf::transform(*source, *destination)) <-- edge(source, destination);
+    hashed(source, udf::transform(*source, *destination)) :- edge(source, destination);
 }
 
 crate::fixture_io! {

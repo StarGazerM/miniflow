@@ -18,6 +18,7 @@ cd "${ROOT_DIR}"
 cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+scripts/verify-syntax-boundary.sh
 scripts/verify-ascent-inventory.sh
 scripts/verify-flowlog-inventory.sh
 scripts/verify-flowlog-batch-inventory.sh

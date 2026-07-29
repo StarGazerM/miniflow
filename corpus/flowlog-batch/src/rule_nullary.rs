@@ -5,16 +5,16 @@ crate::fixture_program! {
     relation capped(i32, i32);
     relation pass_through(i32, i32);
 
-    has_outlier() <-- score(_, value), if *value > 500;
-    capped(id, 100) <--
+    has_outlier() :- score(_, value), if *value > 500;
+    capped(id, 100) :-
         score(id, value),
         has_outlier(),
         if *value > 100;
-    capped(id, value) <--
+    capped(id, value) :-
         score(id, value),
         has_outlier(),
         if *value <= 100;
-    pass_through(id, value) <-- score(id, value), !has_outlier();
+    pass_through(id, value) :- score(id, value), !has_outlier();
 }
 
 crate::fixture_io! {

@@ -1,6 +1,6 @@
 use std::hash::Hash;
 
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -30,8 +30,8 @@ miniflow! {
     relation edge(N, N);
     relation reachable(N, N);
 
-    reachable(x, y) <-- edge(x, y);
-    reachable(x, z) <-- reachable(x, y), edge(y, z);
+    reachable(x, y) :- edge(x, y);
+    reachable(x, z) :- reachable(x, y), edge(y, z);
 }
 
 pub fn check() {

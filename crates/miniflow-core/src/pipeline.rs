@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use proc_macro2::{Ident, Span, TokenStream};
+use proc_macro2::TokenStream;
 use syn::Result;
 
 use crate::compiler::{CompilerContext, Layer, Operation, Registry};
@@ -11,7 +11,20 @@ use crate::flowlog_plan;
 use crate::hir::{Atom, HirProgram, Relation, RelationId, Rule, Scc};
 use crate::rule_plan::RulePlan;
 use crate::scc_plan::SccPlan;
-use crate::{lower, parse};
+use crate::{SourceProgram, lower};
+
+/// Open operation that reads one surface syntax into the shared source model.
+///
+/// A syntax pack replaces this operation and leaves resolution, SCC
+/// construction, planning, and rendering unchanged.
+pub struct ReadSource;
+
+impl Operation for ReadSource {
+    type Input = TokenStream;
+    type Output = SourceProgram;
+
+    const NAME: &'static str = "miniflow.read-source";
+}
 
 /// Immutable resolved-program context shared by rule-planning requests.
 #[derive(Clone)]
@@ -200,12 +213,12 @@ pub struct Compiler {
 }
 
 impl Compiler {
-    /// Construct the standard `MiniFlow` compiler.
+    /// Construct the compiler without choosing a source syntax.
     ///
     /// # Errors
     ///
-    /// Returns a diagnostic if standard operation definitions conflict.
-    pub fn new() -> Result<Self> {
+    /// Returns a diagnostic if standard planning operations conflict.
+    pub fn base() -> Result<Self> {
         let mut registry = Registry::default();
         flowlog_plan::install(&mut registry);
         registry
@@ -244,26 +257,10 @@ impl Compiler {
     ///
     /// Returns syntax, semantic, planning, or rendering diagnostics.
     pub fn compile(&mut self, tokens: TokenStream) -> Result<TokenStream> {
-        self.compile_for_runtime(tokens, Ident::new("miniflow", Span::call_site()))
-    }
-
-    /// Compile tokens with the Ascent-compatible runtime façade.
-    ///
-    /// # Errors
-    ///
-    /// Returns syntax, semantic, planning, or rendering diagnostics.
-    pub fn compile_ascent_flow(&mut self, tokens: TokenStream) -> Result<TokenStream> {
-        self.compile_for_runtime(tokens, Ident::new("ascent_flow", Span::call_site()))
-    }
-
-    fn compile_for_runtime(
-        &mut self,
-        tokens: TokenStream,
-        runtime_crate: Ident,
-    ) -> Result<TokenStream> {
-        let program = parse(tokens)?;
-        let mut hir = lower(program)?;
-        hir.runtime_crate = runtime_crate;
+        let program = self
+            .registry
+            .perform::<ReadSource>(&mut self.context, tokens)?;
+        let hir = lower(program)?;
         self.emit_hir(&hir)
     }
 
@@ -280,10 +277,6 @@ impl HirProgram {
     /// Returns a compiler diagnostic when the program cannot be planned or
     /// rendered by the standard compiler.
     pub fn emit(&self) -> Result<TokenStream> {
-        Compiler::new()?.emit_hir(self)
+        Compiler::base()?.emit_hir(self)
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/pipeline.rs"]
-mod tests;

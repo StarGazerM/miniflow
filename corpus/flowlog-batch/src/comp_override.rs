@@ -9,12 +9,12 @@ crate::fixture_program! {
     relation two__hello(String);
     relation three__hello(String);
 
-    one__hello(value) <-- extra(value);
-    two__hello(value) <-- other(value);
+    one__hello(value) :- extra(value);
+    two__hello(value) :- other(value);
     three__hello("parent_default".to_owned());
-    one_out(value) <-- one__hello(value);
-    two_out(value) <-- two__hello(value);
-    three_out(value) <-- three__hello(value);
+    one_out(value) :- one__hello(value);
+    two_out(value) :- two__hello(value);
+    three_out(value) :- three__hello(value);
 }
 
 crate::fixture_io! {

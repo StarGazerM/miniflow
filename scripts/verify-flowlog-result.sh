@@ -50,7 +50,7 @@ while IFS=$'\t' read -r fixture output_file _canonical_example runtime_example m
         cargo run \
             --quiet \
             --manifest-path "${ROOT_DIR}/Cargo.toml" \
-            -p miniflow \
+            -p miniflow-macro \
             --example "${runtime_example}"
     ) >"${miniflow_run}/output.csv"
 

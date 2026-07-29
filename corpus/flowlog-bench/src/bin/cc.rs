@@ -2,7 +2,7 @@
 
 use harness::*;
 
-miniflow::miniflow! {
+miniflow_macro::miniflow! {
     #![flowlog_batch]
     #![output(cc)]
 
@@ -12,11 +12,11 @@ miniflow::miniflow! {
     relation cc(i32, i32);
 
     // CC(node, min(node)) :- Arc(node, _).
-    cc(node, minimum) <--
+    cc(node, minimum) :-
         agg minimum = min(*node) in arc(node, _);
 
     // CC(node, min(current)) :- Arc(other, node), CC(other, current).
-    cc(node, minimum) <--
+    cc(node, minimum) :-
         cc(other, current),
         agg minimum = min(*current) in arc(other, node);
 }

@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 harness = { path = "harness" }
 miniflow.workspace = true
+miniflow-macro.workspace = true
 
 [lints]
 workspace = true

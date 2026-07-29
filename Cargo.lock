@@ -16,14 +16,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ascent-flow"
-version = "0.1.0"
-dependencies = [
- "miniflow",
- "miniflow-macro",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -320,10 +312,18 @@ name = "miniflow"
 version = "0.1.0"
 dependencies = [
  "differential-dataflow",
- "miniflow-macro",
  "ordered-float",
  "serde",
  "timely",
+]
+
+[[package]]
+name = "miniflow-ascent-corpus"
+version = "0.1.0"
+dependencies = [
+ "miniflow",
+ "miniflow-macro",
+ "serde",
 ]
 
 [[package]]
@@ -344,9 +344,12 @@ version = "0.1.0"
 dependencies = [
  "miniflow",
  "miniflow-core",
+ "miniflow-macro",
  "ordered-float",
+ "prettyplease",
  "proc-macro2",
  "quote",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -355,14 +358,18 @@ version = "0.1.0"
 dependencies = [
  "harness",
  "miniflow",
+ "miniflow-macro",
 ]
 
 [[package]]
 name = "miniflow-macro"
 version = "0.1.0"
 dependencies = [
+ "miniflow",
  "miniflow-core",
+ "prettyplease",
  "proc-macro2",
+ "quote",
  "syn 3.0.3",
 ]
 

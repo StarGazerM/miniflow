@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     pub struct DisjunctionClause;
@@ -7,12 +7,12 @@ miniflow! {
     relation even(i32);
     relation even_or_square(i32);
 
-    square(y * y) <-- number(y), number(y * y);
-    even(x) <-- number(x), if x % 2 == 0;
+    square(y * y) :- number(y), number(y * y);
+    even(x) :- number(x), if x % 2 == 0;
 
     // The Ascent disjunction is ordinary Datalog union after desugaring.
-    even_or_square(x) <-- even(x);
-    even_or_square(x) <-- square(x);
+    even_or_square(x) :- even(x);
+    even_or_square(x) :- square(x);
 }
 
 pub fn check() {

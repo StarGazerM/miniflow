@@ -30,14 +30,14 @@ crate::fixture_program! {
     relation long_name(i32, String);
     relation nested_mixed(i32, i32);
 
-    name_len(id, udf::strlen(name)) <-- item(id, name, _, _);
-    labeled(id, udf::to_label(*price)) <-- item(id, _, price, _);
-    tagged(id, udf::tag(*id, name)) <-- item(id, name, _, _);
-    scored(id, udf::score(name, *price)) <-- item(id, name, price, _);
-    label_len(id, udf::strlen(udf::to_label(*price))) <-- item(id, _, price, _);
-    combined(id, udf::strlen(name) + *price) <-- item(id, name, price, _);
-    long_name(id, name) <-- item(id, name, _, _), if udf::strlen(name) > 5;
-    nested_mixed(id, udf::score(udf::to_label(*price), *quantity)) <--
+    name_len(id, udf::strlen(name)) :- item(id, name, _, _);
+    labeled(id, udf::to_label(*price)) :- item(id, _, price, _);
+    tagged(id, udf::tag(*id, name)) :- item(id, name, _, _);
+    scored(id, udf::score(name, *price)) :- item(id, name, price, _);
+    label_len(id, udf::strlen(udf::to_label(*price))) :- item(id, _, price, _);
+    combined(id, udf::strlen(name) + *price) :- item(id, name, price, _);
+    long_name(id, name) :- item(id, name, _, _), if udf::strlen(name) > 5;
+    nested_mixed(id, udf::score(udf::to_label(*price), *quantity)) :-
         item(id, _, price, quantity);
 }
 

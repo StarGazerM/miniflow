@@ -38,7 +38,7 @@ awk -F '\t' '
         printf "program manifest line %d has invalid upstream kind %s\n", NR, $2 > "/dev/stderr"
         ok = 0
     }
-    $3 != "ascent-include" &&
+    $3 != "translated-fixture" &&
         $3 != "local-recursive-aggregate" &&
         $3 != "local-ldbc" {
         printf "program manifest line %d has invalid implementation %s\n", NR, $3 > "/dev/stderr"
@@ -84,11 +84,18 @@ while IFS=$'\t' read -r program upstream_kind implementation; do
     test -f "${local_source}"
     grep -Fq '#![flowlog_batch]' "${local_source}"
     case "${implementation}" in
-        ascent-include)
-            test -f "${UPSTREAM}/programs/oracle/ascent/${program}/src/main.rs"
-            grep -Fq \
-                "flowlog-bench/programs/oracle/ascent/${program}/src/main.rs" \
-                "${local_source}"
+        translated-fixture)
+            upstream_source="${UPSTREAM}/programs/oracle/ascent/${program}/src/main.rs"
+            translated_source="${CORPUS}/fixtures/${program}.rs"
+            test -f "${upstream_source}"
+            test -f "${CORPUS}/fixtures/${program}.rs"
+            grep -Fq "/fixtures/${program}.rs" "${local_source}"
+            sed \
+                -e 's/<--/:-/g' \
+                -e 's/use ascent::ascent_par;/use fixture::program;/g' \
+                -e 's/ascent_par!/program!/g' \
+                "${upstream_source}" >"${work_dir}/${program}.translated.rs"
+            cmp "${work_dir}/${program}.translated.rs" "${translated_source}"
             ;;
         local-recursive-aggregate)
             test "${program}" = cc -o "${program}" = sssp

@@ -1,6 +1,6 @@
 #![allow(clippy::cast_possible_truncation)]
 
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     struct Percentile;
@@ -16,16 +16,16 @@ miniflow! {
     foo(10, 11);
     bar(1, x, x * 2),
     bar(10, x * 10, x * 20),
-    bar(100, x * 100, x * 200) <-- seed(_), for x in 1..100;
+    bar(100, x * 100, x * 200) :- seed(_), for x in 1..100;
 
-    less_or_equal(group, candidate, value) <--
+    less_or_equal(group, candidate, value) :-
         bar(group, candidate, _),
         bar(group, value, _),
         if value <= candidate;
-    rank(group, candidate, count) <--
+    rank(group, candidate, count) :-
         bar(group, candidate, _),
         agg count = count() in less_or_equal(group, candidate, _);
-    baz(group, candidate) <-- foo(group, _), rank(group, candidate, 75);
+    baz(group, candidate) :- foo(group, _), rank(group, candidate, 75);
 }
 
 miniflow! {
@@ -40,8 +40,8 @@ miniflow! {
     foo(10, 11);
     bar(1, x, x * 2),
     bar(10, x * 10, x * 20),
-    bar(100, x * 100, x * 200) <-- seed(_), for x in 1..100;
-    baz(group, x_mean.round() as i32, y_mean.round() as i32) <--
+    bar(100, x * 100, x * 200) :- seed(_), for x in 1..100;
+    baz(group, x_mean.round() as i32, y_mean.round() as i32) :-
         foo(group, _),
         agg x_mean = mean(x) in bar(group, x, _),
         agg y_mean = mean(y) in bar(group, _, y);
@@ -61,8 +61,8 @@ miniflow! {
     bar(1, 2, 102);
     bar(10, 11, 20);
     bar(10, 11, 12);
-    baz(x, y) <-- foo(x, y), !bar(x, y, _);
-    baz2(x, y) <-- foo(x, y), !bar(x, y, _);
+    baz(x, y) :- foo(x, y), !bar(x, y, _);
+    baz2(x, y) :- foo(x, y), !bar(x, y, _);
 }
 
 miniflow! {
@@ -78,7 +78,7 @@ miniflow! {
     bar(1, 2);
     bar(10, 11);
     bar(10, 11);
-    baz(x, y) <-- foo(x, y), !bar(x, y);
+    baz(x, y) :- foo(x, y), !bar(x, y);
 }
 
 miniflow! {
@@ -93,7 +93,7 @@ miniflow! {
     foo(100, 101);
     bar(1, 2, 3);
     bar(10, 11, 13);
-    baz(x, y) <-- foo(x, y), !bar(x, y, y + 1);
+    baz(x, y) :- foo(x, y), !bar(x, y, y + 1);
 }
 
 miniflow! {
@@ -102,7 +102,7 @@ miniflow! {
     relation bar(i32);
     foo(0);
     foo(10);
-    bar(mean.round() as i32) <-- agg mean = mean(x) in foo(x);
+    bar(mean.round() as i32) :- agg mean = mean(x) in foo(x);
 }
 
 pub fn check() {

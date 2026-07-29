@@ -5,10 +5,10 @@ crate::fixture_program! {
     relation dept_sale(i32, i32);
     relation dept_total(i32, i32);
 
-    dept_sale(dept_id, amount) <--
+    dept_sale(dept_id, amount) :-
         sale(dept_id, _, amount),
         dept(dept_id, _);
-    dept_total(dept_id, total) <--
+    dept_total(dept_id, total) :-
         agg total = sum(amount) in dept_sale(dept_id, amount);
 }
 

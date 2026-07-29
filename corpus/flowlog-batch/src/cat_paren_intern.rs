@@ -4,8 +4,8 @@ crate::fixture_program! {
     relation tagged(i32, String);
     relation plain(i32, String);
 
-    tagged(id, format!("v={}", value)) <-- src(id, value);
-    plain(id, format!("v={}", value)) <-- src(id, value);
+    tagged(id, format!("v={}", value)) :- src(id, value);
+    plain(id, format!("v={}", value)) :- src(id, value);
 }
 
 crate::fixture_io! {

@@ -5,9 +5,9 @@ crate::fixture_program! {
     relation low(i32);
     relation confirmed_high(i32);
 
-    high(id) <-- person(id, score), if *score >= 80;
-    low(id) <-- person(id, _), !high(id);
-    confirmed_high(id) <-- person(id, _), !low(id);
+    high(id) :- person(id, score), if *score >= 80;
+    low(id) :- person(id, _), !high(id);
+    confirmed_high(id) :- person(id, _), !low(id);
 }
 
 crate::fixture_io! {

@@ -17,7 +17,7 @@ use proc_macro2::TokenStream;
 
 macro_rules! fixture_program {
     ($($program:tt)*) => {
-        miniflow::miniflow! {
+        miniflow_macro::miniflow! {
             #![flowlog_batch]
             $($program)*
         }
@@ -66,7 +66,7 @@ macro_rules! binary_i32_filter_fixture {
             relation data(i32, i32);
             relation out(i32, i32);
 
-            out(id, $value) <-- data(id, $value), if $condition;
+            out(id, $value) :- data(id, $value), if $condition;
         }
 
         pub fn run(

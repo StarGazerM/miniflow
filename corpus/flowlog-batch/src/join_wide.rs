@@ -5,10 +5,10 @@ crate::fixture_program! {
     relation wide_narrow(i32, i32, i32, i32);
     relation wide_self(i32, i32, i32);
 
-    wide_narrow(a, d, h, tag) <--
+    wide_narrow(a, d, h, tag) :-
         wide(a, _, _, d, _, _, _, h),
         label(a, tag);
-    wide_self(a, b1, b2) <--
+    wide_self(a, b1, b2) :-
         wide(a, b1, _, _, _, _, _, _),
         wide(a, b2, _, _, _, _, _, _),
         if *b1 < *b2;

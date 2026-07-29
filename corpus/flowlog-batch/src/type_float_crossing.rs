@@ -20,16 +20,16 @@ crate::fixture_program! {
         OrderedFloat<f64>,
     );
 
-    ab(x, y, z) <-- a(x, y), b(x, z);
-    bc(x, z, w) <-- b(x, z), c(z, w);
-    abc(x, y, z, w) <-- ab(x, y, z), c(z, w);
-    multi(x, y) <-- a(x, y);
-    multi(x, w) <-- bc(x, _, w);
+    ab(x, y, z) :- a(x, y), b(x, z);
+    bc(x, z, w) :- b(x, z), c(z, w);
+    abc(x, y, z, w) :- ab(x, y, z), c(z, w);
+    multi(x, y) :- a(x, y);
+    multi(x, w) :- bc(x, _, w);
     with_const(
         x,
         OrderedFloat(1.25_f32),
         OrderedFloat(2.75_f64),
-    ) <-- a(x, _);
+    ) :- a(x, _);
 }
 
 crate::fixture_io! {

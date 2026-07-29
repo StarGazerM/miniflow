@@ -4,8 +4,8 @@ crate::fixture_program! {
     relation first_last(i32, i32);
     relation middle(i32);
 
-    first_last(a, e) <-- data(a, _, _, _, e);
-    middle(c) <-- data(_, _, c, _, _);
+    first_last(a, e) :- data(a, _, _, _, e);
+    middle(c) :- data(_, _, c, _, _);
 }
 
 crate::fixture_io! {

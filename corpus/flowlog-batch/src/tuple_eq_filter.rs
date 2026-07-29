@@ -5,7 +5,7 @@ crate::fixture_program! {
 
     in_("a".to_owned(), "b".to_owned());
     in_("a".to_owned(), "a".to_owned());
-    out(x, y) <-- in_(x, y), if (x, y) == (x, x);
+    out(x, y) :- in_(x, y), if (x, y) == (x, x);
 }
 
 crate::fixture_io! {

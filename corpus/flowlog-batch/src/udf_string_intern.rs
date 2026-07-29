@@ -47,20 +47,20 @@ crate::fixture_program! {
     relation dept_fixed(i32, String);
     relation fancy(i32, String);
 
-    upper_name(id, udf::upper(name)) <-- person(id, name, _, _);
-    reverse_upper(id, udf::reverse(udf::upper(name))) <-- person(id, name, _, _);
-    name_at_dept(id, udf::join_str(name, " @ ", dept)) <-- person(id, name, dept, _);
-    long_name(id, name) <-- person(id, name, _, _), if udf::strlen(name) > 4;
-    name_dept_len(id, udf::strlen(name) + udf::strlen(dept)) <--
+    upper_name(id, udf::upper(name)) :- person(id, name, _, _);
+    reverse_upper(id, udf::reverse(udf::upper(name))) :- person(id, name, _, _);
+    name_at_dept(id, udf::join_str(name, " @ ", dept)) :- person(id, name, dept, _);
+    long_name(id, name) :- person(id, name, _, _), if udf::strlen(name) > 4;
+    name_dept_len(id, udf::strlen(name) + udf::strlen(dept)) :-
         person(id, name, dept, _);
-    short_name(id, udf::take_n(name, 3)) <-- person(id, name, _, _);
-    deep_nested(id, udf::reverse(udf::upper(udf::take_n(name, 3)))) <--
+    short_name(id, udf::take_n(name, 3)) :- person(id, name, _, _);
+    deep_nested(id, udf::reverse(udf::upper(udf::take_n(name, 3)))) :-
         person(id, name, _, _);
-    starts_with_e(id, name) <-- person(id, name, _, _),
+    starts_with_e(id, name) :- person(id, name, _, _),
         if udf::starts_with(name, "e") == 1;
-    greeting(id, format!("Hello, {}!", udf::upper(name))) <-- person(id, name, _, _);
-    dept_fixed(id, udf::replace_str(dept, "engineering", "eng")) <-- person(id, _, dept, _);
-    fancy(id, udf::join_str(udf::upper(name), "-", udf::reverse(dept))) <--
+    greeting(id, format!("Hello, {}!", udf::upper(name))) :- person(id, name, _, _);
+    dept_fixed(id, udf::replace_str(dept, "engineering", "eng")) :- person(id, _, dept, _);
+    fancy(id, udf::join_str(udf::upper(name), "-", udf::reverse(dept))) :-
         person(id, name, dept, _);
 }
 

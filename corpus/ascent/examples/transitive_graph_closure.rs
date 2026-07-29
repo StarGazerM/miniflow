@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     pub struct TransitiveGraphClosure;
@@ -7,9 +7,9 @@ miniflow! {
     relation reachable(String, String);
     relation closure_of_a(String);
 
-    reachable(x, y) <-- edge(x, y);
-    reachable(x, z) <-- reachable(x, y), edge(y, z);
-    closure_of_a(y) <-- reachable("A".to_owned(), y);
+    reachable(x, y) :- edge(x, y);
+    reachable(x, z) :- reachable(x, y), edge(y, z);
+    closure_of_a(y) :- reachable("A".to_owned(), y);
 }
 
 pub fn check() {

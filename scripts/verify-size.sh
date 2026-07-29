@@ -25,7 +25,6 @@ tokei_stats() {
 
 read -r miniflow_files miniflow_lines miniflow_code \
     miniflow_comments miniflow_blanks <<<"$(tokei_stats \
-    "${ROOT_DIR}/crates/ascent-flow/src" \
     "${ROOT_DIR}/crates/miniflow-core/src" \
     "${ROOT_DIR}/crates/miniflow-macro/src" \
     "${ROOT_DIR}/crates/miniflow/src")"
@@ -37,13 +36,12 @@ read -r flowlog_files flowlog_lines flowlog_code \
     "${ROOT_DIR}/flowlog/flowlog-compiler/src")"
 
 test "${miniflow_lines}" -le 9600
-test "$((miniflow_lines * 3))" -lt "${flowlog_lines}"
 test "${miniflow_code}" -le 8600
+test "$((miniflow_lines * 3))" -lt "${flowlog_lines}"
 test "$((miniflow_code * 3))" -lt "${flowlog_code}"
 
 largest_file_lines="$(
     find \
-        "${ROOT_DIR}/crates/ascent-flow/src" \
         "${ROOT_DIR}/crates/miniflow-core/src" \
         "${ROOT_DIR}/crates/miniflow-macro/src" \
         "${ROOT_DIR}/crates/miniflow/src" \
@@ -57,7 +55,7 @@ comparison="$(printf '%s\n' \
     '<!-- BEGIN TOKEI COMPARISON -->' \
     '| Production Rust | Files | Lines | Code | Comments | Blanks |' \
     '|---|---:|---:|---:|---:|---:|' \
-    "| MiniFlow + AscentFlow | ${miniflow_files} | ${miniflow_lines} | ${miniflow_code} | ${miniflow_comments} | ${miniflow_blanks} |" \
+    "| MiniFlow | ${miniflow_files} | ${miniflow_lines} | ${miniflow_code} | ${miniflow_comments} | ${miniflow_blanks} |" \
     "| FlowLog batch stack | ${flowlog_files} | ${flowlog_lines} | ${flowlog_code} | ${flowlog_comments} | ${flowlog_blanks} |" \
     '<!-- END TOKEI COMPARISON -->')"
 documented="$(sed -n \

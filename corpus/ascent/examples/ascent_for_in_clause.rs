@@ -1,11 +1,11 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     pub struct ForInClause;
     relation seed(i32);
     relation number(i32);
 
-    number(x + y) <-- seed(x), for y in 0..3;
+    number(x + y) :- seed(x), for y in 0..3;
 }
 
 pub fn check() {

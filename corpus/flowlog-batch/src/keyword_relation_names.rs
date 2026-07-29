@@ -4,7 +4,7 @@ crate::fixture_program! {
     relation match_(i32, String);
     relation out(i32, String);
 
-    out(id, name) <-- type_(id, name), match_(id, _);
+    out(id, name) :- type_(id, name), match_(id, _);
 }
 
 crate::fixture_io! {

@@ -5,7 +5,7 @@ crate::fixture_program! {
 
     input("p".to_owned(), "q".to_owned());
     input("a".to_owned(), "b".to_owned());
-    out(format!("({}, {})", x, y)) <-- input(x, y);
+    out(format!("({}, {})", x, y)) :- input(x, y);
 }
 
 pub fn run(

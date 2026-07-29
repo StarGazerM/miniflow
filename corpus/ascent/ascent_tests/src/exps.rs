@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     struct RelationTraitsOne;

@@ -4,7 +4,7 @@ crate::fixture_program! {
     relation done(i32, i32);
     relation pending(i32, i32);
 
-    pending(person, task) <-- assign(person, task), !done(person, task);
+    pending(person, task) :- assign(person, task), !done(person, task);
 }
 
 crate::fixture_io! {

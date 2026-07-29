@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     pub struct ShortestPath;
@@ -6,14 +6,14 @@ miniflow! {
     relation path(String, String, u32);
     relation shortest_path(String, String, u32);
 
-    path(x, y, weight) <-- edge(x, y, weight);
-    path(x, z, weight + suffix) <--
+    path(x, y, weight) :- edge(x, y, weight);
+    path(x, z, weight + suffix) :-
         edge(x, y, weight),
         path(y, z, suffix);
 
     // Ascent's `Dual<u32>` lattice is the grouped minimum of the path
     // relation. DD performs the reduction; MiniFlow needs no lattice AST.
-    shortest_path(x, y, distance) <--
+    shortest_path(x, y, distance) :-
         path(x, y, _),
         agg distance = min(candidate) in path(x, y, candidate);
 }

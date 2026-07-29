@@ -18,22 +18,22 @@ crate::fixture_program! {
     relation neq590(i32, i32);
     relation multi(i32, i32);
 
-    gt700(source, destination) <--
+    gt700(source, destination) :-
         flight(source, destination, fare, duration),
         if udf::cost(*fare, *duration) > 700;
-    rhs_lte150(source, destination) <--
+    rhs_lte150(source, destination) :-
         flight(source, destination, _, _),
         if 150 >= udf::risk(*source, *destination);
-    udf_lt_udf(source, destination) <--
+    udf_lt_udf(source, destination) :-
         flight(source, destination, _, _),
         if udf::risk(*source, *destination) < udf::risk(*destination, *source);
-    eq590(source, destination) <--
+    eq590(source, destination) :-
         flight(source, destination, fare, duration),
         if udf::cost(*fare, *duration) == 590;
-    neq590(source, destination) <--
+    neq590(source, destination) :-
         flight(source, destination, fare, duration),
         if udf::cost(*fare, *duration) != 590;
-    multi(source, destination) <--
+    multi(source, destination) :-
         flight(source, destination, fare, duration),
         if udf::cost(*fare, *duration) > 700,
         if udf::risk(*source, *destination) >= 150;

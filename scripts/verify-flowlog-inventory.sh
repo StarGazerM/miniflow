@@ -16,8 +16,8 @@ diff -u "${work_dir}/fixture-directories" "${work_dir}/manifest-fixtures"
 while IFS=$'\t' read -r fixture _output canonical_example runtime_example mode; do
     test -f "${PARITY_DIR}/${fixture}/program.dl"
     test -f \
-        "${ROOT_DIR}/crates/miniflow-core/examples/${canonical_example}.rs"
-    test -f "${ROOT_DIR}/crates/miniflow/examples/${runtime_example}.rs"
+        "${ROOT_DIR}/crates/miniflow-macro/examples/${canonical_example}.rs"
+    test -f "${ROOT_DIR}/crates/miniflow-macro/examples/${runtime_example}.rs"
     [[ "${mode}" == "plain" || "${mode}" == "profile" ]]
 done <"${MANIFEST}"
 

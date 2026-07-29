@@ -6,9 +6,9 @@ crate::fixture_program! {
     relation even(i32);
     relation odd(i32);
 
-    even(x) <-- zero(x);
-    odd(y) <-- even(x), succ(x, y);
-    even(y) <-- odd(x), succ(x, y);
+    even(x) :- zero(x);
+    odd(y) :- even(x), succ(x, y);
+    even(y) :- odd(x), succ(x, y);
 }
 
 crate::fixture_io! {

@@ -9,6 +9,8 @@ recursive strongly connected component is evaluated to a fixed point.
 The compiler surface is embedded in Rust:
 
 ```rust,ignore
+use miniflow_macro::miniflow;
+
 miniflow! {
     pub struct Reach;
 
@@ -16,33 +18,14 @@ miniflow! {
     relation arc(i32, i32);
     relation reach(i32);
 
-    reach(x) <-- source(x);
-    reach(y) <-- reach(x), arc(x, y);
+    reach(x) :- source(x);
+    reach(y) :- reach(x), arc(x, y);
 }
 ```
 
-The same existing surface is also exported under the more descriptive
-`ascent-flow` package:
-
-```rust,ignore
-use ascent_flow::ascent_flow;
-
-ascent_flow! {
-    pub struct Reach;
-
-    relation source(i32);
-    relation arc(i32, i32);
-    relation reach(i32);
-
-    reach(x) <-- source(x);
-    reach(y) <-- reach(x), arc(x, y);
-}
-```
-
-Both macros lower through `miniflow-core`; only the absolute runtime-facade
-path in emitted Rust differs. `miniflow!` remains source- and byte-compatible.
-The names therefore coexist without maintaining a second parser, HIR,
-optimizer, or dataflow emitter.
+`miniflow!` is the only surface macro and `:-` is the only rule arrow. The
+parser is a private module of `miniflow-macro`; there is no reusable syntax
+crate, Ascent-facing macro, compatibility feature, or facade package.
 
 Relation column types and expressions are Rust syntax trees. MiniFlow does not
 define an arithmetic AST, numeric coercions, casts, built-in string functions,
@@ -82,20 +65,25 @@ shared only at the embedded host boundary.
 
 ## One compiler path
 
-`miniflow-core` owns every semantic phase:
+`miniflow-core` owns every semantic phase after an installed external reader:
 
 ```text
 Rust tokens
-  -> syntax
-  -> desugared relational program
+  -> installed ReadSource component outside core
+  -> syntax-neutral source program
   -> HIR
   -> dependency SCCs and strata
   -> DD plan
   -> canonical Rust token stream
 ```
 
-The proc macro calls this library. Expansion tests call the same library.
-There is no test-only renderer or separately maintained build-script compiler.
+Core has no parser, default-syntax layer, `Compiler::new`, or free token-level
+`compile` convenience that can silently select a grammar. The `miniflow`
+runtime package also has no dependency on the compiler, macro, or syntax
+packages. An application explicitly selects `miniflow-macro`, which configures
+`Compiler::base()` with its reader. Expansion tests use the same configured
+path. There is no test-only renderer or separately maintained build-script
+compiler.
 
 ## Exact expansion parity
 
@@ -147,7 +135,8 @@ For each overlap fixture, the parity harness:
 
 1. renders the corresponding `.dl` fixture through the pinned FlowLog batch
    compiler;
-2. renders the MiniFlow program through `miniflow-core`;
+2. renders the MiniFlow program through the private `miniflow-macro` parser and
+   the configured `miniflow-core` compiler;
 3. locates the unique `dataflow` closure in each generated Rust syntax tree;
 4. removes only host-adapter output sinks (`inspect`/`probe_with`) and the
    standalone closure's final input-handle return expression;
@@ -212,11 +201,14 @@ Its executable matrix contains:
 - 55 `default.txt`, 20 `doop_intensive.txt`, 8 `joinorder.txt`, and 2
   `ldbc.txt` active rows.
 
-For ordinary programs, the local wrapper passes the upstream
-`ascent_par!` body unchanged to the MiniFlow proc macro. The only handwritten
-semantic translations are recursive-min `cc`/`sssp` and LDBC Q2/Q13.
-Four-worker row-level tests cover those exceptional translations, including
-reachable and unreachable Q13 results.
+For ordinary programs, the local wrapper compiles a checked-in strict MiniFlow
+fixture. The inventory gate recreates it from the pinned Rust oracle with only
+two mechanical changes: the rule arrow becomes `:-`, and the oracle macro name
+becomes the local fixture macro name. It then requires byte equality. No
+oracle syntax is accepted by `miniflow!`. The only handwritten semantic
+translations are recursive-min `cc`/`sssp` and LDBC Q2/Q13. Four-worker
+row-level tests cover those exceptional translations, including reachable and
+unreachable Q13 results.
 
 Join-order files are generated plans rather than distinct Datalog
 denotations. The inventory gate compares each program's `.dl` files against

@@ -4,17 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Embedded batch Datalog over Timely and Differential Dataflow."
+description = "Runtime facade for embedded batch Datalog over Differential Dataflow."
 
 [dependencies]
 differential-dataflow.workspace = true
-miniflow-macro.workspace = true
 ordered-float.workspace = true
 serde = { version = "1", features = ["derive"] }
 timely.workspace = true
-
-[dev-dependencies]
-serde = { version = "1", features = ["derive", "rc"] }
 
 [lints]
 workspace = true

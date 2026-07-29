@@ -8,7 +8,7 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{Expr, Ident, Pat, Result, Type};
 
-use crate::syntax;
+use crate::source;
 
 /// Stable index into [`HirProgram::relations`].
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -77,15 +77,14 @@ pub struct Scc {
 pub struct HirProgram {
     pub attributes: Vec<syn::Attribute>,
     pub outputs: Option<HashSet<RelationId>>,
-    pub signature: syntax::Signature,
+    pub signature: source::Signature,
     pub relations: Vec<Relation>,
     pub rules: Vec<Rule>,
     pub sccs: Vec<Scc>,
-    pub(crate) runtime_crate: Ident,
 }
 
 impl HirProgram {
-    pub(crate) fn lower(program: syntax::Program) -> Result<Self> {
+    pub(crate) fn lower(program: source::Program) -> Result<Self> {
         reject_unknown_program_attributes(&program.attributes)?;
 
         let mut relation_names: HashMap<String, RelationId> = HashMap::new();
@@ -106,7 +105,7 @@ impl HirProgram {
             relations.push(Relation {
                 id,
                 name: declaration.name,
-                columns: declaration.columns.into_iter().collect(),
+                columns: declaration.columns,
             });
         }
 
@@ -148,7 +147,6 @@ impl HirProgram {
             relations,
             rules,
             sccs,
-            runtime_crate: Ident::new("miniflow", Span::call_site()),
         })
     }
 
@@ -217,18 +215,18 @@ fn reject_unknown_program_attributes(attributes: &[syn::Attribute]) -> Result<()
 }
 
 fn lower_rule(
-    rule: syntax::Rule,
+    rule: source::Rule,
     relation_names: &HashMap<String, RelationId>,
     relations: &[Relation],
 ) -> Result<Rule> {
-    let lower_atom = |atom: syntax::Atom| {
+    let lower_atom = |atom: source::Atom| {
         let Some(&relation) = relation_names.get(&atom.relation.to_string()) else {
             return Err(syn::Error::new(
                 atom.relation.span(),
                 format!("relation `{}` is not declared", atom.relation),
             ));
         };
-        let arguments = atom.arguments.into_iter().collect_vec();
+        let arguments = atom.arguments;
         let expected = relations[relation.0].columns.len();
         if arguments.len() != expected {
             return Err(syn::Error::new(
@@ -256,36 +254,36 @@ fn lower_rule(
             .body
             .into_iter()
             .map(|item| match item {
-                syntax::BodyItem::Atom(atom) => lower_atom(atom).map(BodyItem::Atom),
-                syntax::BodyItem::NegatedAtom(atom) => lower_atom(atom).map(BodyItem::NegatedAtom),
-                syntax::BodyItem::Condition(expression) => Ok(BodyItem::Condition(expression)),
-                syntax::BodyItem::IfLet {
+                source::BodyItem::Atom(atom) => lower_atom(atom).map(BodyItem::Atom),
+                source::BodyItem::NegatedAtom(atom) => lower_atom(atom).map(BodyItem::NegatedAtom),
+                source::BodyItem::Condition(expression) => Ok(BodyItem::Condition(expression)),
+                source::BodyItem::IfLet {
                     pattern,
                     expression,
                 } => Ok(BodyItem::IfLet {
                     pattern,
                     expression,
                 }),
-                syntax::BodyItem::Let {
+                source::BodyItem::Let {
                     pattern,
                     expression,
                 } => Ok(BodyItem::Let {
                     pattern,
                     expression,
                 }),
-                syntax::BodyItem::Generator {
+                source::BodyItem::Generator {
                     pattern,
                     expression,
                 } => Ok(BodyItem::Generator {
                     pattern,
                     expression,
                 }),
-                syntax::BodyItem::Aggregate(aggregate) => {
+                source::BodyItem::Aggregate(aggregate) => {
                     let source = lower_atom(aggregate.source)?;
                     Ok(BodyItem::Aggregate(Aggregate {
                         binding: aggregate.binding,
                         operator: aggregate.operator,
-                        arguments: aggregate.arguments.into_iter().collect(),
+                        arguments: aggregate.arguments,
                         source,
                     }))
                 }
@@ -420,7 +418,3 @@ fn derive_sccs(rules: &[Rule]) -> Result<Vec<Scc>> {
 
     Ok(scheduled)
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/hir.rs"]
-mod tests;

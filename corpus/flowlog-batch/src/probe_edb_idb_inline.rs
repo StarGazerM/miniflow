@@ -4,7 +4,7 @@ crate::fixture_program! {
     relation foo(i32);
 
     foo(1);
-    foo(x) <-- bar(x);
+    foo(x) :- bar(x);
 }
 
 crate::fixture_io! {

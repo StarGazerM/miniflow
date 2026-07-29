@@ -5,11 +5,11 @@ crate::fixture_program! {
     relation valid_edge(i32, i32, i32);
     relation min_weight(i32, i32);
 
-    valid_edge(source, destination, weight) <--
+    valid_edge(source, destination, weight) :-
         edge(source, destination, weight),
         node(source),
         node(destination);
-    min_weight(source_id, minimum) <--
+    min_weight(source_id, minimum) :-
         agg minimum = min(weight) in valid_edge(source_id, _, weight);
 }
 

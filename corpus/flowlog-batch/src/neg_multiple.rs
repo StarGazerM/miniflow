@@ -6,7 +6,7 @@ crate::fixture_program! {
     relation on_leave(i32);
     relation active_regular(i32);
 
-    active_regular(id) <--
+    active_regular(id) :-
         person(id),
         !manager(id),
         !intern(id),

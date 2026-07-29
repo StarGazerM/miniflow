@@ -9,7 +9,7 @@ crate::fixture_program! {
 
     param(1);
     param(2);
-    out(x) <-- param(x);
+    out(x) :- param(x);
 }
 
 #[cfg(test)]

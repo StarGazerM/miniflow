@@ -1,0 +1,18 @@
+[package]
+name = "miniflow-ascent-corpus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autoexamples = false
+
+[lib]
+path = "runner.rs"
+
+[dependencies]
+miniflow.workspace = true
+miniflow-macro.workspace = true
+serde = { version = "1", features = ["derive", "rc"] }
+
+[lints]
+workspace = true

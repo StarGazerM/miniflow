@@ -5,7 +5,7 @@ crate::fixture_program! {
     relation salary(i32, i32);
     relation out(i32, String, i32);
 
-    out(employee_id, dept_name, amount) <--
+    out(employee_id, dept_name, amount) :-
         employee(employee_id, dept_id),
         dept(dept_id, dept_name),
         salary(employee_id, amount);

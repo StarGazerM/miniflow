@@ -4,8 +4,8 @@ crate::fixture_program! {
     relation two_hop(i32, i32);
     relation triangle(i32, i32, i32);
 
-    two_hop(a, c) <-- edge(a, b), edge(b, c);
-    triangle(a, b, c) <--
+    two_hop(a, c) :- edge(a, b), edge(b, c);
+    triangle(a, b, c) :-
         edge(a, b),
         edge(b, c),
         edge(c, a),

@@ -6,7 +6,7 @@ crate::fixture_program! {
     relation data(String, i32);
     relation top3(String, i32);
 
-    top3(name, score) <-- data(name, score);
+    top3(name, score) :- data(name, score);
 }
 
 pub fn run(fixture_dir: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {

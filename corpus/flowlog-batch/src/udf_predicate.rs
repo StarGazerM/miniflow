@@ -27,8 +27,8 @@ crate::fixture_program! {
     relation prime_val(i32, i32);
     relation composite_val(i32, i32);
 
-    prime_val(id, value) <-- data(id, value), if udf::is_prime(*value);
-    composite_val(id, value) <-- data(id, value), if !udf::is_prime(*value);
+    prime_val(id, value) :- data(id, value), if udf::is_prime(*value);
+    composite_val(id, value) :- data(id, value), if !udf::is_prime(*value);
 }
 
 crate::fixture_io! {

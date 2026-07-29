@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     pub struct IfClause;
@@ -6,8 +6,8 @@ miniflow! {
     relation even(isize);
     relation odd(isize);
 
-    even(x) <-- number(x), if x % 2 == 0;
-    odd(x) <-- number(x), if x % 2 != 0;
+    even(x) :- number(x), if x % 2 == 0;
+    odd(x) :- number(x), if x % 2 != 0;
 }
 
 pub fn check() {

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use proc_macro2::Ident;
+use proc_macro2::{Ident, Span};
 use syn::Result;
 
 use crate::compiler::{CompilerContext, Registry};
@@ -11,7 +11,7 @@ use crate::pipeline::{PlanRule, PlanScc, PlanningCatalog, RuleRequest, SccReques
 use crate::plan::{NodeId, OperatorKey, Plan};
 use crate::rule_plan::RulePlan;
 use crate::scc_plan::{SccPlan, SccRulePlan};
-use crate::syntax::Signature;
+use crate::source::Signature;
 
 /// Nonrecursive region containing completed rule-head plans.
 pub const NONRECURSIVE_REGION: OperatorKey =
@@ -184,7 +184,7 @@ impl ProgramPlan {
 
         Ok(Self {
             signature: hir.signature.clone(),
-            runtime_crate: hir.runtime_crate.clone(),
+            runtime_crate: Ident::new("miniflow", Span::call_site()),
             relations: hir.relations.clone(),
             outputs,
             inline_facts,

@@ -1,9 +1,9 @@
 #![allow(clippy::unreadable_literal, clippy::wildcard_imports)]
 
-mod ascent {
-    macro_rules! ascent_par {
+mod fixture {
+    macro_rules! program {
         ($($program:tt)*) => {
-            miniflow::miniflow! {
+            miniflow_macro::miniflow! {
                 #![flowlog_batch]
                 #![output(
                     stack_def_use_def_used,
@@ -16,10 +16,7 @@ mod ascent {
         };
     }
 
-    pub(crate) use ascent_par;
+    pub(crate) use program;
 }
 
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../flowlog-bench/programs/oracle/ascent/z3/src/main.rs"
-));
+include!(concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/z3.rs"));

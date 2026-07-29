@@ -5,10 +5,10 @@ crate::fixture_program! {
     relation class_score(i32, i32, i32);
     relation class_avg(i32, i32);
 
-    class_score(class_id, student_id, value) <--
+    class_score(class_id, student_id, value) :-
         student(student_id, class_id),
         score(student_id, value);
-    class_avg(class_id, average.0 as i32) <--
+    class_avg(class_id, average.0 as i32) :-
         agg average = mean(value) in class_score(class_id, _, value);
 }
 

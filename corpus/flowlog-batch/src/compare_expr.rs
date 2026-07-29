@@ -6,7 +6,7 @@ crate::fixture_program! {
     relation data(i32, i32, i32);
     relation out(i32, i32);
 
-    out(id, a + b) <-- data(id, a, b), if *a + *b >= 100;
+    out(id, a + b) :- data(id, a, b), if *a + *b >= 100;
 }
 
 pub fn run(fixture_dir: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {

@@ -6,9 +6,9 @@ crate::fixture_program! {
     relation crossed(i64, i64, u64);
     relation agg_sum(i64, i64);
 
-    joined(x, *y + 1, *z + 2) <-- a(x, y), b(x, z);
-    crossed(x, y, z) <-- a(x, y), b(x, z);
-    agg_sum(x, total) <-- agg total = sum(y) in a(x, y);
+    joined(x, *y + 1, *z + 2) :- a(x, y), b(x, z);
+    crossed(x, y, z) :- a(x, y), b(x, z);
+    agg_sum(x, total) :- agg total = sum(y) in a(x, y);
 }
 
 crate::fixture_io! {

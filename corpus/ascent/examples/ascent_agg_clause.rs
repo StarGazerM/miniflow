@@ -1,6 +1,6 @@
 #![allow(clippy::cast_possible_truncation)]
 
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     pub struct AggregateClause;
@@ -11,11 +11,11 @@ miniflow! {
     relation total(i32);
     relation cardinality(usize);
 
-    lowest(y) <-- agg y = min(x) in number(x);
-    greatest(y) <-- agg y = max(x) in number(x);
-    average(y.round() as i32) <-- agg y = mean(x) in number(x);
-    total(y) <-- agg y = sum(x) in number(x);
-    cardinality(y) <-- agg y = count() in number(_);
+    lowest(y) :- agg y = min(x) in number(x);
+    greatest(y) :- agg y = max(x) in number(x);
+    average(y.round() as i32) :- agg y = mean(x) in number(x);
+    total(y) :- agg y = sum(x) in number(x);
+    cardinality(y) :- agg y = count() in number(_);
 }
 
 pub fn check() {

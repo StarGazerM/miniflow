@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     pub struct NegationClause;
@@ -6,8 +6,8 @@ miniflow! {
     relation even(i32);
     relation odd(i32);
 
-    even(x) <-- number(x), if x % 2 == 0;
-    odd(x) <-- number(x), !even(x);
+    even(x) :- number(x), if x % 2 == 0;
+    odd(x) :- number(x), !even(x);
 }
 
 pub fn check() {

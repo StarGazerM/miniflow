@@ -11,7 +11,7 @@ crate::fixture_program! {
         "t".to_owned(),
         "u".to_owned(),
     );
-    out((a, b, c, d, e, f)) <-- in_(a, b, c, d, e, f);
+    out((a, b, c, d, e, f)) :- in_(a, b, c, d, e, f);
 }
 
 crate::fixture_io! {

@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 use serde::{Deserialize, Serialize};
 
 macro_rules! name_type {
@@ -26,12 +26,12 @@ miniflow! {
     relation alias(Var, Var);
     relation points_to(Var, Obj);
 
-    alias(x, x) <-- assign(x, _);
-    alias(x, x) <-- assign(_, x);
-    alias(x, y) <-- assign(x, y);
-    alias(x, y) <-- ld(x, a, field), alias(a, b), st(b, field, y);
-    points_to(x, object) <-- new(x, object);
-    points_to(x, object) <-- alias(x, z), points_to(z, object);
+    alias(x, x) :- assign(x, _);
+    alias(x, x) :- assign(_, x);
+    alias(x, y) :- assign(x, y);
+    alias(x, y) :- ld(x, a, field), alias(a, b), st(b, field, y);
+    points_to(x, object) :- new(x, object);
+    points_to(x, object) :- alias(x, z), points_to(z, object);
 }
 
 pub fn check() {

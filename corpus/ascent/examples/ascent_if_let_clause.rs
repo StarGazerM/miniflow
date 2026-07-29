@@ -1,11 +1,11 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     pub struct IfLetClause;
     relation option(Option<isize>);
     relation some(isize);
 
-    some(y) <-- option(x), if let Some(y) = x;
+    some(y) :- option(x), if let Some(y) = x;
 }
 
 pub fn check() {

@@ -7,9 +7,9 @@ crate::fixture_program! {
 
     in_("p".to_owned(), "q".to_owned());
     in_("p".to_owned(), "p".to_owned());
-    first((x, y).0) <-- in_(x, y), if (x, y).1 == (x, y).1;
-    match_eq((x, y).0) <-- in_(x, y), if (x, y).1 == (x, y).0;
-    single((x,)) <-- in_(x, _);
+    first((x, y).0) :- in_(x, y), if (x, y).1 == (x, y).1;
+    match_eq((x, y).0) :- in_(x, y), if (x, y).1 == (x, y).0;
+    single((x,)) :- in_(x, _);
 }
 
 crate::fixture_io! {

@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -24,7 +24,7 @@ miniflow! {
     relation list(List, usize);
 
     list(List::Nil, 0);
-    list(List::Cons(*length, Box::new(tail.clone())), height) <--
+    list(List::Cons(*length, Box::new(tail.clone())), height) :-
         list(tail, length),
         let height = *length + 1,
         if *height <= 5;

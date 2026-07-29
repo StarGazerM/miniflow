@@ -4,7 +4,7 @@ crate::fixture_program! {
     relation has_task(i32, i32);
     relation idle(i32);
 
-    idle(id) <-- person(id), !has_task(id, _);
+    idle(id) :- person(id), !has_task(id, _);
 }
 
 crate::fixture_io! {

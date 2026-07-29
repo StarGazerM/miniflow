@@ -4,8 +4,8 @@ crate::fixture_program! {
     relation has_big();
     relation safe_data(i32, i32);
 
-    has_big() <-- data(_, value), if *value > 1000;
-    safe_data(id, value) <-- data(id, value), !has_big();
+    has_big() :- data(_, value), if *value > 1000;
+    safe_data(id, value) :- data(id, value), !has_big();
 }
 
 crate::fixture_io! {

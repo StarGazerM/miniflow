@@ -4,7 +4,7 @@ crate::fixture_program! {
     relation b(i32);
     relation empty_join(i32);
 
-    empty_join(x) <-- a(x), b(x);
+    empty_join(x) :- a(x), b(x);
 }
 
 crate::fixture_io! {

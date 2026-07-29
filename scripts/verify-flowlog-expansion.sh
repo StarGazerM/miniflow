@@ -44,7 +44,7 @@ while IFS=$'\t' read -r fixture _output canonical_example _runtime_example mode;
     cargo run \
         --quiet \
         --manifest-path "${ROOT_DIR}/Cargo.toml" \
-        -p miniflow-core \
+        -p miniflow-macro \
         --example "${canonical_example}" \
         >"${fixture_work}/miniflow.rs"
 

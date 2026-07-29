@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     pub struct MacroRule;
@@ -8,7 +8,7 @@ miniflow! {
     relation shared(Arc<isize>);
 
     // Ascent's source macro expands to this ordinary Datalog head.
-    shared(Arc::new(*x)) <-- unique(x);
+    shared(Arc::new(*x)) :- unique(x);
 }
 
 pub fn check() {

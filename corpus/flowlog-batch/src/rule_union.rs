@@ -4,10 +4,10 @@ crate::fixture_program! {
     relation sibling(i32, i32);
     relation related(i32, i32);
 
-    related(child, parent_id) <-- parent(child, parent_id);
-    related(parent_id, child) <-- parent(child, parent_id);
-    related(a, b) <-- sibling(a, b);
-    related(b, a) <-- sibling(a, b);
+    related(child, parent_id) :- parent(child, parent_id);
+    related(parent_id, child) :- parent(child, parent_id);
+    related(a, b) :- sibling(a, b);
+    related(b, a) :- sibling(a, b);
 }
 
 crate::fixture_io! {

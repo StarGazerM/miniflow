@@ -1,4 +1,4 @@
-//! Shared compiler core for `MiniFlow` and `AscentFlow`.
+//! Syntax-independent compiler kernel for `MiniFlow`.
 //!
 //! This crate is intentionally usable outside a procedural macro so expansion
 //! parity tests exercise exactly the compiler invoked by the public macros.
@@ -15,24 +15,17 @@ pub mod plan;
 pub mod program_plan;
 pub mod rule_plan;
 pub mod scc_plan;
-mod syntax;
+pub mod source;
 
-use proc_macro2::TokenStream;
 use syn::Result;
 
 pub use canonical::extract_dataflow_core;
 pub use hir::HirProgram;
-pub use pipeline::{Compiler, PlanRule, PlanScc, PlanningCatalog, RuleRequest, SccRequest};
-pub use syntax::Program;
-
-/// Parse and validate an embedded `MiniFlow` program.
-///
-/// # Errors
-///
-/// Returns a syntax error when the token stream is not a `MiniFlow` program.
-pub fn parse(tokens: TokenStream) -> Result<Program> {
-    syn::parse2(tokens)
-}
+pub use pipeline::{
+    Compiler, PlanRule, PlanScc, PlanningCatalog, ReadSource, RuleRequest, SccRequest,
+};
+pub use source::Program;
+pub use source::Program as SourceProgram;
 
 /// Lower a parsed program into relation-identified HIR and dependency SCCs.
 ///
@@ -42,43 +35,4 @@ pub fn parse(tokens: TokenStream) -> Result<Program> {
 /// arities.
 pub fn lower(program: Program) -> Result<HirProgram> {
     HirProgram::lower(program)
-}
-
-/// Execute the implemented compiler stages.
-///
-/// Code emission is introduced after the relational HIR and SCC invariants are
-/// pinned. Keeping this entry point now ensures the proc macro and tests cannot
-/// grow separate stage drivers.
-///
-/// # Errors
-///
-/// Returns any syntax or semantic error reported by the shared compiler
-/// stages.
-pub fn compile(tokens: TokenStream) -> Result<TokenStream> {
-    Compiler::new()?.compile(tokens)
-}
-
-/// Compile an embedded program against the `ascent-flow` runtime façade.
-///
-/// The syntax, HIR, SCC schedule, and dataflow emitter are shared with
-/// [`compile`]; only the absolute public-crate path in generated Rust differs.
-///
-/// # Errors
-///
-/// Returns any syntax or semantic error reported by the shared compiler
-/// stages.
-pub fn compile_ascent_flow(tokens: TokenStream) -> Result<TokenStream> {
-    Compiler::new()?.compile_ascent_flow(tokens)
-}
-
-/// Compile and format a complete canonical Rust expansion.
-///
-/// # Errors
-///
-/// Returns any compiler diagnostic, or a Rust parse error if the emitter
-/// produces an invalid file.
-pub fn compile_canonical(tokens: TokenStream) -> Result<String> {
-    let emitted = compile(tokens)?;
-    let file: syn::File = syn::parse2(emitted)?;
-    Ok(prettyplease::unparse(&file))
 }

@@ -28,17 +28,17 @@ crate::fixture_program! {
     relation by_tier(i32, i32);
     relation tier_cost(i32, i32);
 
-    total_bw(source_id, total) <--
+    total_bw(source_id, total) :-
         agg total = sum(udf::bw_cost(*weight)) in edge(source_id, _, weight);
-    max_bw(source_id, maximum) <--
+    max_bw(source_id, maximum) :-
         agg maximum = max(udf::bw_cost(*weight)) in edge(source_id, _, weight);
-    min_bw(source_id, minimum) <--
+    min_bw(source_id, minimum) :-
         agg minimum = min(udf::bw_cost(*weight)) in edge(source_id, _, weight);
-    count_bw(source_id, *count as i32) <--
+    count_bw(source_id, *count as i32) :-
         agg count = count(udf::bw_cost(*weight)) in edge(source_id, _, weight);
-    by_tier(udf::tier(*weight), maximum) <--
+    by_tier(udf::tier(*weight), maximum) :-
         agg maximum = max(weight) in edge(_, _, weight);
-    tier_cost(udf::tier(*weight), total) <--
+    tier_cost(udf::tier(*weight), total) :-
         agg total = sum(udf::bw_cost(*weight)) in edge(_, _, weight);
 }
 

@@ -1,45 +1,31 @@
-# MiniFlow and AscentFlow
+# MiniFlow
 
 MiniFlow is a clean batch-Datalog core derived from the semantics of FlowLog
 and the embedded compiler shape of Ascent.
 
-The implementation has four production crates:
+The implementation has three production crates:
 
-- `miniflow-core`: syntax, relational HIR, dependency SCCs, planning, and
-  canonical Rust emission.
-- `miniflow-macro`: a procedural-macro shell around `miniflow-core`.
-- `miniflow`: the public macro and runtime facade.
-- `ascent-flow`: the Ascent-named public facade over the same compiler and
-  runtime.
+- `miniflow-core`: the syntax-neutral source model, relational HIR, dependency
+  SCCs, planning, and canonical Rust emission.
+- `miniflow-macro`: the private MiniFlow token parser and procedural-macro
+  driver that installs the parser into `miniflow-core`.
+- `miniflow`: the runtime used by generated programs. It has no compiler,
+  macro, or syntax dependency.
 
-`miniflow!` and `ascent_flow!` currently accept the same embedded,
-Ascent-shaped rule syntax. They do not fork the compiler: the selected public
-crate path is the only expansion difference. This keeps `miniflow` available
-while making the existing surface accurately available as `ascent-flow`; a
-future FlowLog-shaped MiniFlow parser can lower into the same HIR.
+There is one surface macro and one rule arrow: `miniflow!` accepts MiniFlow
+rules written with `:-`. There is no Ascent-facing macro, parser mode, feature,
+or facade crate.
 
-```rust
-use ascent_flow::ascent_flow;
+The uncoupled dependency form selects the driver explicitly:
 
-ascent_flow! {
-    struct Reach;
-
-    relation source(i32);
-    relation arc(i32, i32);
-    relation reach(i32);
-
-    reach(x) <-- source(x);
-    reach(y) <-- reach(x), arc(x, y);
-}
+```toml
+[dependencies]
+miniflow = "0.1"
+miniflow-macro = "0.1"
 ```
 
-## Usage
-
-Declare relations and rules with `miniflow!`, initialize the input relation
-fields, and call `run`. Derived relations are written back to their fields:
-
 ```rust
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 
 miniflow! {
     struct Reach;
@@ -48,8 +34,52 @@ miniflow! {
     relation arc(i32, i32);
     relation reach(i32);
 
-    reach(x) <-- source(x);
-    reach(y) <-- reach(x), arc(x, y);
+    reach(x) :- source(x);
+    reach(y) :- reach(x), arc(x, y);
+}
+```
+
+### Compiler and syntax boundary
+
+`ReadSource` is an open compiler operation from Rust tokens to the public
+`source::Program` model. `Compiler::base()` installs no reader and there is no
+grammar-selecting constructor in core. The `miniflow-macro` driver installs
+its private parser, then reuses name and arity resolution, SCC construction,
+physical planning, and DD rendering:
+
+```text
+application --> miniflow-macro --> miniflow-core
+generated Rust --------------------> miniflow runtime
+```
+
+The structural token parser is a private module of `miniflow-macro`, not a
+reusable syntax crate and not part of `miniflow-core`. The public `miniflow`
+runtime does not depend on either compiler crate.
+
+The external-layer integration test includes a distinct `graph Program;`
+surface and proves that it produces the identical expansion without rewriting
+to MiniFlow tokens. A genuinely different surface can publish its own driver,
+implement `ReadSource`, and depend on `miniflow-core` plus the runtime without
+editing either. The dependency gate verifies that neither `miniflow-core` nor
+`miniflow` selects a syntax.
+
+## Usage
+
+Declare relations and rules with `miniflow!`, initialize the input relation
+fields, and call `run`. Derived relations are written back to their fields:
+
+```rust
+use miniflow_macro::miniflow;
+
+miniflow! {
+    struct Reach;
+
+    relation source(i32);
+    relation arc(i32, i32);
+    relation reach(i32);
+
+    reach(x) :- source(x);
+    reach(y) :- reach(x), arc(x, y);
 }
 
 fn main() {
@@ -67,7 +97,7 @@ fn main() {
 The checked-in CSV-backed version can be run directly:
 
 ```console
-$ (cd parity/flowlog/reach && cargo run --quiet -p miniflow --example parity_reach)
+$ (cd parity/flowlog/reach && cargo run --quiet -p miniflow-macro --example parity_reach)
 1
 2
 3
@@ -128,9 +158,9 @@ Correctness has two independent gates:
 
 1. Every program in the declared FlowLog/MiniFlow overlap matrix must produce
    byte-identical canonical generated Rust and identical relation output.
-2. Every tracked Ascent test, example, and benchmark program must have a
-   corresponding MiniFlow program. A corpus-coverage test rejects missing or
-   silently ignored upstream files.
+2. Every tracked external semantic test, example, and benchmark program must
+   have a strict `:-` MiniFlow counterpart. Corpus-coverage tests reject
+   missing or silently ignored upstream files.
 
 The pinned
 [`flowlog-rs/flowlog-bench`](https://github.com/flowlog-rs/flowlog-bench)
@@ -142,10 +172,12 @@ suite is available as 22 executable programs under
   `polonius_int`;
 - both active LDBC programs.
 
-Eighteen wrappers compile the upstream Ascent rule tokens directly through
-`miniflow!`. `cc`, `sssp`, and the two LDBC queries are explicit embedded
-translations because they use recursive minima or have no upstream Ascent
-crate. `WORKERS=N` controls both fact ingestion and Timely/DD workers.
+Eighteen wrappers compile checked-in `:-` MiniFlow fixtures. The inventory gate
+reconstructs each fixture from its pinned external oracle using only the
+recorded arrow and macro-name translation, then requires byte equality.
+`cc`, `sssp`, and the two LDBC queries are explicit embedded translations
+because they use recursive minima or have no corresponding Rust oracle.
+`WORKERS=N` controls both fact ingestion and Timely/DD workers.
 
 The inventory gate also checks all 85 active configuration rows and proves
 that every one of the 878 generated `.dl` files is a pure body-atom
@@ -161,14 +193,14 @@ features cannot rebuild a monolithic planning/code-generation module.
 <!-- BEGIN TOKEI COMPARISON -->
 | Production Rust | Files | Lines | Code | Comments | Blanks |
 |---|---:|---:|---:|---:|---:|
-| MiniFlow + AscentFlow | 23 | 9544 | 8523 | 406 | 615 |
+| MiniFlow | 24 | 9506 | 8509 | 390 | 607 |
 | FlowLog batch stack | 151 | 39910 | 29303 | 6402 | 4205 |
 <!-- END TOKEI COMPARISON -->
 
-MiniFlow plus AscentFlow is 16.2% of the FlowLog stack by total source lines
-and 20.8% by Tokei code lines. Equivalently, FlowLog contains about 4.8 times
-as much production code. `scripts/verify-size.sh` runs Tokei, enforces both
-size bounds, and rejects a stale README table.
+MiniFlow is 23.8% of the FlowLog stack by total source lines and 29.1% by Tokei
+code lines. Equivalently, FlowLog contains about 3.4 times as much production
+code. `scripts/verify-size.sh` runs Tokei, enforces both size bounds, and
+rejects a stale README table.
 
 See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the exact contract.
 

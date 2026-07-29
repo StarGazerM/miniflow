@@ -4,8 +4,8 @@ crate::fixture_program! {
     relation high_scorer(i32);
     relation not_high_scorer(i32);
 
-    high_scorer(id) <-- person(id, score), if *score > 80;
-    not_high_scorer(id) <-- person(id, _), !high_scorer(id);
+    high_scorer(id) :- person(id, score), if *score > 80;
+    not_high_scorer(id) :- person(id, _), !high_scorer(id);
 }
 
 crate::fixture_io! {

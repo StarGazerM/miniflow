@@ -6,8 +6,8 @@ crate::fixture_program! {
     relation added(OrderedFloat<f64>, OrderedFloat<f64>, OrderedFloat<f64>);
     relation multiplied(OrderedFloat<f64>, OrderedFloat<f64>, OrderedFloat<f64>);
 
-    added(a, b, *a + *b) <-- data(a, b);
-    multiplied(a, b, *a * *b) <-- data(a, b);
+    added(a, b, *a + *b) :- data(a, b);
+    multiplied(a, b, *a * *b) :- data(a, b);
 }
 
 crate::fixture_io! {

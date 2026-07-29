@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -27,25 +27,25 @@ miniflow! {
     list(nil());
     len(nil(), 0);
 
-    list(cons(*character, tail.clone())) <--
+    list(cons(*character, tail.clone())) :-
         character(character),
         list(tail),
         len(tail, length),
         if *length < 5;
 
-    len(list_value, length + 1) <--
+    len(list_value, length + 1) :-
         character(character),
         len(tail, length),
         let list_value = cons(*character, tail.clone()),
         list(list_value);
 
-    res("-".to_owned()) <-- list(nil());
-    res("a".to_owned()) <-- list(cons('a', nil()));
-    res("b".to_owned()) <-- list(cons('b', nil()));
-    res("c".to_owned()) <-- list(cons('c', nil()));
-    res("ab".to_owned()) <-- list(cons('a', cons('b', nil())));
-    res("aba".to_owned()) <-- list(cons('a', cons('b', cons('a', nil()))));
-    res("abc".to_owned()) <-- list(cons('a', cons('b', cons('c', nil()))));
+    res("-".to_owned()) :- list(nil());
+    res("a".to_owned()) :- list(cons('a', nil()));
+    res("b".to_owned()) :- list(cons('b', nil()));
+    res("c".to_owned()) :- list(cons('c', nil()));
+    res("ab".to_owned()) :- list(cons('a', cons('b', nil())));
+    res("aba".to_owned()) :- list(cons('a', cons('b', cons('a', nil()))));
+    res("abc".to_owned()) :- list(cons('a', cons('b', cons('c', nil()))));
 }
 
 pub fn check() {

@@ -4,7 +4,7 @@ crate::fixture_program! {
     relation blocked(i32);
     relation active(i32);
 
-    active(id) <-- person(id), !blocked(id);
+    active(id) :- person(id), !blocked(id);
 }
 
 crate::fixture_io! {

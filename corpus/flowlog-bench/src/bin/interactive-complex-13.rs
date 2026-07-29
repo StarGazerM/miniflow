@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use harness::*;
 
-miniflow::miniflow! {
+miniflow_macro::miniflow! {
     #![flowlog_batch]
     #![output(q13)]
 
@@ -15,18 +15,18 @@ miniflow::miniflow! {
     relation dist(i64, i64, i64);
     relation q13(i64);
 
-    dist(source, source, minimum) <--
+    dist(source, source, minimum) :-
         agg minimum = min(0) in param(source, _);
 
-    dist(source, destination, minimum) <--
+    dist(source, destination, minimum) :-
         dist(source, middle, distance),
         agg minimum = min(*distance + 1) in knows(middle, destination);
 
-    q13(distance) <--
+    q13(distance) :-
         param(_, target),
         dist(_, target, distance);
 
-    q13(-1) <--
+    q13(-1) :-
         param(_, target),
         !dist(_, target, _);
 }

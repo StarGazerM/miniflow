@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 use serde::{Deserialize, Serialize};
 
 miniflow! {
@@ -19,10 +19,10 @@ miniflow! {
     baz(12);
 
     // Expansion of `foo!(x, y)`.
-    bar(x, y) <-- foo1(x, y), if x < y;
-    bar(x, y) <-- foo2(x, y), if x < y;
-    quax(y) <-- baz(x), foo1(x, y), if x < y;
-    quax(y) <-- baz(x), foo2(x, y), if x < y;
+    bar(x, y) :- foo1(x, y), if x < y;
+    bar(x, y) :- foo2(x, y), if x < y;
+    quax(y) :- baz(x), foo1(x, y), if x < y;
+    quax(y) :- baz(x), foo2(x, y), if x < y;
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -38,14 +38,14 @@ miniflow! {
     relation value(isize);
     relation pair(isize, isize);
 
-    value(result) <--
+    value(result) :-
         expression(atom),
         if let Atomic::Value(result) = atom;
-    value(result) <--
+    value(result) :-
         expression(atom),
         if let Atomic::Variable(variable) = atom,
         sigma(variable, result);
-    pair(x, y) <-- value(x), value(y);
+    pair(x, y) :- value(x), value(y);
 }
 
 miniflow! {
@@ -56,13 +56,13 @@ miniflow! {
     relation two_step(i32, i32);
 
     foo(1, 2), reverse(2, 1);
-    foo(x, x + 1), reverse(x + 1, x) <-- foo(1, 2), for x in 0..10;
-    four_step(x, y) <--
+    foo(x, x + 1), reverse(x + 1, x) :- foo(1, 2), for x in 0..10;
+    four_step(x, y) :-
         foo(x, y),
         foo(x + 1, y + 1),
         foo(x + 2, y + 2),
         foo(x + 3, y + 3);
-    two_step(x, z) <-- foo(x, y), foo(y, z);
+    two_step(x, z) :- foo(x, y), foo(y, z);
 }
 
 miniflow! {
@@ -72,14 +72,14 @@ miniflow! {
     relation can_compile_to(String, String);
     relation compiles_in_two_steps(String, String);
 
-    can_compile_to(source, target) <--
+    can_compile_to(source, target) :-
         compiler(name, source, target),
         !bad(name);
-    can_compile_to(source, target) <--
+    can_compile_to(source, target) :-
         compiler(first_name, source, middle),
         !bad(first_name),
         can_compile_to(middle, target);
-    compiles_in_two_steps(source, target) <--
+    compiles_in_two_steps(source, target) :-
         compiler(first_name, source, middle),
         !bad(first_name),
         compiler(second_name, middle, target),
@@ -105,10 +105,10 @@ miniflow! {
     bar(Some(2), 3);
     bar(None, 4);
 
-    baz(x, z) <-- bar(option, y), if let Some(x) = option, foo(y, z);
-    baz_expected(x, z) <-- bar(option, y), if let Some(x) = option, foo(y, z);
-    quax(x, z) <-- foo(x, y), foo(y, z);
-    quax_expected(x, z) <-- foo(x, y), foo(y, z);
+    baz(x, z) :- bar(option, y), if let Some(x) = option, foo(y, z);
+    baz_expected(x, z) :- bar(option, y), if let Some(x) = option, foo(y, z);
+    quax(x, z) :- foo(x, y), foo(y, z);
+    quax_expected(x, z) :- foo(x, y), foo(y, z);
 }
 
 pub fn check() {

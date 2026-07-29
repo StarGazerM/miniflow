@@ -3,7 +3,7 @@
 use std::fmt::Debug;
 use std::hash::Hash;
 
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -11,7 +11,7 @@ miniflow! {
     struct GeneratorsAndConditions;
     relation node(i32, Vec<i32>);
     relation edge(i32, i32);
-    edge(x, y) <-- node(x, neighbors), for &y in neighbors.iter();
+    edge(x, y) :- node(x, neighbors), for &y in neighbors.iter();
 }
 
 miniflow! {
@@ -19,7 +19,7 @@ miniflow! {
     relation student(u32);
     relation course_grade(u32, u32, u16);
     relation average(u32, u16);
-    average(student, grade.round() as u16) <--
+    average(student, grade.round() as u16) :-
         student(student),
         agg grade = mean(value) in course_grade(student, _, value);
 }
@@ -29,9 +29,9 @@ miniflow! {
     relation edge(i32, i32);
     relation reflexive(bool);
     relation tc(i32, i32);
-    tc(x, y) <-- edge(x, y);
-    tc(x, z) <-- edge(x, y), tc(y, z);
-    tc(x, x), tc(y, y) <-- reflexive(true), edge(x, y);
+    tc(x, y) :- edge(x, y);
+    tc(x, z) :- edge(x, y), tc(y, z);
+    tc(x, x), tc(y, y) :- reflexive(true), edge(x, y);
 }
 
 miniflow! {
@@ -49,8 +49,8 @@ miniflow! {
             + 'static;
     relation edge(N, N);
     relation tc(N, N);
-    tc(x, y) <-- edge(x, y);
-    tc(x, z) <-- edge(x, y), tc(y, z);
+    tc(x, y) :- edge(x, y);
+    tc(x, z) :- edge(x, y), tc(y, z);
 }
 
 miniflow! {
@@ -73,8 +73,8 @@ miniflow! {
     struct Ancestry;
     relation parent(String, String);
     relation ancestor(String, String);
-    ancestor(parent, child) <-- parent(parent, child);
-    ancestor(parent, descendant) <--
+    ancestor(parent, child) :- parent(parent, child);
+    ancestor(parent, descendant) :-
         parent(parent, child),
         ancestor(child, descendant);
 }

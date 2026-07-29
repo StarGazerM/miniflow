@@ -5,10 +5,10 @@ crate::fixture_program! {
     relation c(i32);
     relation d(i32);
 
-    c(x) <-- b(x);
-    c(x) <-- a(x);
-    d(x) <-- b(x);
-    d(x) <-- a(x);
+    c(x) :- b(x);
+    c(x) :- a(x);
+    d(x) :- b(x);
+    d(x) :- a(x);
 }
 
 crate::fixture_io! {

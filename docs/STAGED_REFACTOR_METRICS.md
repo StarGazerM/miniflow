@@ -1,7 +1,8 @@
 # Staged compiler refactor measurements
 
-Measured on 2026-07-29 against baseline commit `86d5735` and the final verified
-staged-refactor tree. Both builds used isolated target directories with:
+Measured on 2026-07-29 against baseline commit `86d5735` and the verified
+planning-refactor checkpoint before syntax extraction. Both builds used
+isolated target directories with:
 
 ```text
 CARGO_INCREMENTAL=0
@@ -10,9 +11,9 @@ CARGO_PROFILE_RELEASE_STRIP=symbols
 cargo build --release -p miniflow-macro
 ```
 
-The full clean build was run in both orders to reduce warm-cache bias.
-Compiler-crates-only time was measured after cleaning only `miniflow-core` and
-`miniflow-macro` from otherwise populated release targets.
+The baseline and staged clean builds were run in both orders to reduce
+warm-cache bias. Compiler-crates-only time was measured after cleaning only
+`miniflow-core` and `miniflow-macro` from otherwise populated release targets.
 
 | Measure | Baseline | Staged | Change |
 |---|---:|---:|---:|
@@ -23,6 +24,22 @@ Compiler-crates-only time was measured after cleaning only `miniflow-core` and
 | `miniflow-core` release rlib | 12,774,548 B | 13,821,062 B | +8.19% |
 | `miniflow-macro` stripped release `.so` | 4,527,576 B | 4,689,352 B | +3.57% |
 | Isolated release target | 63,224,342 B | 64,800,313 B | +2.49% |
+
+After deleting the facade and syntax packages, a final isolated build under
+`/data` measured:
+
+| Stable measure | Pre-removal staged | Final | Change |
+|---|---:|---:|---:|
+| Production Rust lines | 9,564 | 9,506 | -0.61% |
+| `miniflow-core` release rlib | 13,821,062 B | 13,548,388 B | -1.97% |
+| `miniflow-macro` stripped release `.so` | 4,689,352 B | 4,868,080 B | +3.81% |
+| Isolated release target | 64,800,313 B | 64,681,514 B | -0.18% |
+
+The parser now belongs to the procedural-macro artifact, so the `.so` increase
+is an ownership transfer rather than an added syntax implementation. The
+whole isolated target, which counts that code once, became 118,799 bytes
+smaller. The final single clean run took 4.76 seconds with 381,564 KiB peak
+RSS; timings remain host-noise-sensitive.
 
 Timing and RSS are host-noise-sensitive; artifact and target byte counts are
 the stable regression signals. The size gate separately requires:
@@ -40,3 +57,15 @@ Canonical expansion byte counts remained unchanged:
 | join | 6,939 |
 | reach | 8,373 |
 | negation | 7,927 |
+
+## Runtime and driver dependency inversion
+
+The rejected strict-Ascent component was removed because it only rejected one
+arrow spelling before delegating to the shared grammar. The facade and the
+separate syntax crate were removed as well. There is now one public macro,
+`miniflow!`, and its parser accepts only `:-`.
+
+`miniflow-core` contains no token parser or syntax dependency. The `miniflow`
+runtime contains no compiler, macro, or syntax dependency. The private parser
+and driver live together in `miniflow-macro`; applications select that macro
+crate explicitly.

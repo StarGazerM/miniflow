@@ -1,4 +1,4 @@
-use miniflow::miniflow;
+use miniflow_macro::miniflow;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -21,10 +21,10 @@ miniflow! {
     relation flow(ProgPoint, ProgPoint);
     relation res(Res);
 
-    flow(p1, p2) <-- succ(p1, p2);
-    flow(p1, p3) <-- flow(p1, p2), flow(p2, p3);
-    res(Res::Ok) <-- flow(ProgPoint::new("w1", "c1"), ProgPoint::new("r2", "c1"));
-    res(Res::Err) <-- flow(ProgPoint::new("w1", "c1"), ProgPoint::new("r2", "c2"));
+    flow(p1, p2) :- succ(p1, p2);
+    flow(p1, p3) :- flow(p1, p2), flow(p2, p3);
+    res(Res::Ok) :- flow(ProgPoint::new("w1", "c1"), ProgPoint::new("r2", "c1"));
+    res(Res::Err) :- flow(ProgPoint::new("w1", "c1"), ProgPoint::new("r2", "c2"));
 }
 
 pub fn check() {

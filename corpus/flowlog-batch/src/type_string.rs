@@ -3,7 +3,7 @@ crate::fixture_program! {
     relation data(i32, String);
     relation out(i32, String);
 
-    out(id, name) <-- data(id, name);
+    out(id, name) :- data(id, name);
 }
 
 crate::fixture_io! {

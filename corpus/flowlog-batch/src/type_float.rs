@@ -5,7 +5,7 @@ crate::fixture_program! {
     relation data(OrderedFloat<f32>, OrderedFloat<f64>);
     relation out(OrderedFloat<f32>, OrderedFloat<f64>);
 
-    out(a, b) <-- data(a, b);
+    out(a, b) :- data(a, b);
 }
 
 crate::fixture_io! {

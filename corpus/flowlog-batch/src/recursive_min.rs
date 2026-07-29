@@ -4,9 +4,9 @@ crate::fixture_program! {
     relation edge(i32, i32, i32);
     relation min_dist(i32, i32);
 
-    min_dist(node_id, minimum) <--
+    min_dist(node_id, minimum) :-
         agg minimum = min(0) in source(node_id);
-    min_dist(destination, minimum) <--
+    min_dist(destination, minimum) :-
         min_dist(source_id, distance),
         agg minimum = min(*distance + *weight)
             in edge(source_id, destination, weight);

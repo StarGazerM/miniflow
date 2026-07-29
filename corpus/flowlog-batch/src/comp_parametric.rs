@@ -5,8 +5,8 @@ crate::fixture_program! {
     relation a__p(i32, i32);
     relation b__p(String, String);
 
-    a__p(x, y) <-- input_a(x, y);
-    b__p(x, y) <-- input_b(x, y);
+    a__p(x, y) :- input_a(x, y);
+    b__p(x, y) :- input_b(x, y);
 }
 
 crate::fixture_io! {

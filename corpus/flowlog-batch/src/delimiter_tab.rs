@@ -6,7 +6,7 @@ crate::fixture_program! {
     relation pair(i32, i32);
     relation copy(i32, i32);
 
-    copy(a, b) <-- pair(a, b);
+    copy(a, b) :- pair(a, b);
 }
 
 pub fn run(fixture_dir: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {

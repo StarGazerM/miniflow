@@ -1,9 +1,9 @@
 [workspace]
 members = [
+    "corpus/ascent",
     "corpus/flowlog-bench",
     "corpus/flowlog-bench/harness",
     "corpus/flowlog-batch",
-    "crates/ascent-flow",
     "crates/miniflow",
     "crates/miniflow-core",
     "crates/miniflow-macro",
@@ -28,10 +28,9 @@ quote = "1.0"
 syn = { version = "3.0", features = ["extra-traits", "full", "parsing", "visit", "visit-mut"] }
 timely = "0.31"
 
-ascent-flow = { path = "crates/ascent-flow" }
-miniflow = { path = "crates/miniflow" }
+miniflow = { path = "crates/miniflow", default-features = false }
 miniflow-core = { path = "crates/miniflow-core" }
-miniflow-macro = { path = "crates/miniflow-macro" }
+miniflow-macro = { path = "crates/miniflow-macro", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

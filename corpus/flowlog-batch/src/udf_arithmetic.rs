@@ -24,14 +24,14 @@ crate::fixture_program! {
     relation both(i32, i32, i32);
     relation double_pen(i32, i32);
 
-    total_cost(id, *price + udf::penalty(*days)) <-- order(id, price, days, _);
-    udf_minus_var(id, udf::penalty(*days) - *price) <-- order(id, price, days, _);
-    net_cost(id, *price + udf::penalty(*days) - udf::tax(*price)) <--
+    total_cost(id, *price + udf::penalty(*days)) :- order(id, price, days, _);
+    udf_minus_var(id, udf::penalty(*days) - *price) :- order(id, price, days, _);
+    net_cost(id, *price + udf::penalty(*days) - udf::tax(*price)) :-
         order(id, price, days, _);
-    penalty_qty(id, udf::penalty(*days) * *quantity) <--
+    penalty_qty(id, udf::penalty(*days) * *quantity) :-
         order(id, _, days, quantity);
-    both(id, udf::penalty(*days), udf::tax(*price)) <-- order(id, price, days, _);
-    double_pen(id, udf::penalty(*days) + udf::penalty(*quantity)) <--
+    both(id, udf::penalty(*days), udf::tax(*price)) :- order(id, price, days, _);
+    double_pen(id, udf::penalty(*days) + udf::penalty(*quantity)) :-
         order(id, _, days, quantity);
 }
 

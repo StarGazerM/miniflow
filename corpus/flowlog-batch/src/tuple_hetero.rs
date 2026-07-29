@@ -11,7 +11,7 @@ crate::fixture_program! {
         true,
         "hi".to_owned(),
     );
-    out((number, float, boolean, symbol)) <-- in_(number, float, boolean, symbol);
+    out((number, float, boolean, symbol)) :- in_(number, float, boolean, symbol);
 }
 
 crate::fixture_io! {

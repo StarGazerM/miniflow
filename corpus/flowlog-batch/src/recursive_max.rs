@@ -4,9 +4,9 @@ crate::fixture_program! {
     relation edge(i32, i32, i32);
     relation max_dist(i32, i32);
 
-    max_dist(node_id, maximum) <--
+    max_dist(node_id, maximum) :-
         agg maximum = max(0) in source(node_id);
-    max_dist(destination, maximum) <--
+    max_dist(destination, maximum) :-
         max_dist(source_id, distance),
         agg maximum = max(*distance + *weight)
             in edge(source_id, destination, weight);
