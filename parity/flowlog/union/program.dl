@@ -1,0 +1,9 @@
+.decl Left(x: int32)
+.input Left(IO="file", filename="Left.csv", delimiter=",")
+.decl Right(x: int32)
+.input Right(IO="file", filename="Right.csv", delimiter=",")
+
+.decl Output(x: int32)
+Output(x) :- Left(x).
+Output(x) :- Right(x).
+.output Output

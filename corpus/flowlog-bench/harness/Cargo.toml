@@ -1,0 +1,18 @@
+[package]
+name = "harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ahash = "0.8"
+boxcar = "0.2"
+csv = "1"
+dashmap = "6"
+miniflow.workspace = true
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,8 @@
+.decl Left(x: int32, y: int32)
+.input Left(IO="file", filename="Left.csv", delimiter=",")
+.decl Right(y: int32, z: int32)
+.input Right(IO="file", filename="Right.csv", delimiter=",")
+
+.decl Output(x: int32, z: int32)
+Output(x, z) :- Left(x, y), Right(y, z).
+.output Output

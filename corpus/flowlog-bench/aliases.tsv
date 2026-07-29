@@ -1,0 +1,2 @@
+# configured-name	semantic-source	reason
+borrow	polonius_int	upstream-default-config-has-no-flowlog-borrow-directory

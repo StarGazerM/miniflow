@@ -1,0 +1,7 @@
+# fixture	reason
+builtins	str-intern-representation
+cat_paren_intern	str-intern-representation
+match_builtin	str-intern-representation
+output_all_types_intern	str-intern-representation
+tuple_str_intern	str-intern-representation
+udf_string_intern	str-intern-representation

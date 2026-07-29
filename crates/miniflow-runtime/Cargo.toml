@@ -1,0 +1,16 @@
+[package]
+name = "miniflow-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared Timely and Differential Dataflow runtime for MiniFlow frontends."
+
+[dependencies]
+differential-dataflow.workspace = true
+ordered-float.workspace = true
+serde = { version = "1", features = ["derive"] }
+timely.workspace = true
+
+[lints]
+workspace = true

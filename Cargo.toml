@@ -1,0 +1,62 @@
+[workspace]
+members = [
+    "corpus/flowlog-bench",
+    "corpus/flowlog-bench/harness",
+    "corpus/flowlog-batch",
+    "crates/ascent-flow",
+    "crates/ascent-flow-macro",
+    "crates/ascent-flow-syntax",
+    "crates/miniflow",
+    "crates/miniflow-core",
+    "crates/miniflow-macro",
+    "crates/miniflow-runtime",
+    "crates/miniflow-syntax",
+]
+exclude = ["flowlog", "flowlog-bench"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/StarGazerM/miniflow"
+
+[workspace.dependencies]
+differential-dataflow = "0.25"
+itertools = "0.15"
+ordered-float = { version = "5", features = ["serde"] }
+petgraph = "0.8"
+prettyplease = "0.3"
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "3.0", features = ["extra-traits", "full", "parsing", "visit", "visit-mut"] }
+timely = "0.31"
+
+ascent-flow = { path = "crates/ascent-flow" }
+ascent-flow-macro = { path = "crates/ascent-flow-macro" }
+ascent-flow-syntax = { path = "crates/ascent-flow-syntax" }
+miniflow = { path = "crates/miniflow" }
+miniflow-core = { path = "crates/miniflow-core" }
+miniflow-macro = { path = "crates/miniflow-macro" }
+miniflow-runtime = { path = "crates/miniflow-runtime" }
+miniflow-syntax = { path = "crates/miniflow-syntax" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+# Match the release policy emitted by FlowLog compiler 0.5.0 while keeping
+# incremental artifacts disabled for every local build profile.
+[profile.dev]
+incremental = false
+
+[profile.test]
+incremental = false
+
+[profile.release]
+opt-level = 2
+panic = "abort"
+incremental = false

@@ -1,0 +1,6 @@
+.decl Input(x: int32, y: int32)
+.input Input(IO="file", filename="Input.csv", delimiter=",")
+
+.decl Output(x: int32, y: int32)
+Output(x, y) :- Input(x, y), x < y.
+.output Output

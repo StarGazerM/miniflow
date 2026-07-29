@@ -1,0 +1,7 @@
+.decl Seed(x: int32)
+Seed(1).
+Seed(2).
+
+.decl Output(x: int32)
+Output(x) :- Seed(x).
+.output Output

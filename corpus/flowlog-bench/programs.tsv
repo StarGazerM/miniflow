@@ -1,0 +1,23 @@
+# program	upstream-kind	implementation
+andersen	canonical	flowlog-syntax
+bipartite	canonical	flowlog-syntax
+borrow	configured-alias	flowlog-syntax
+cc	canonical	flowlog-syntax
+crdt	canonical	flowlog-syntax
+crdt_slow	canonical	flowlog-syntax
+csda	canonical	flowlog-syntax
+cspa	canonical	flowlog-syntax
+cvc5	canonical	flowlog-syntax
+doop	canonical	flowlog-syntax
+dyck	canonical	flowlog-syntax
+galen	canonical	flowlog-syntax
+interactive-complex-13	ldbc	flowlog-syntax
+interactive-complex-2	ldbc	flowlog-syntax
+pointsto	canonical	flowlog-syntax
+polonius_int	canonical	flowlog-syntax
+polonius_str	canonical	flowlog-syntax
+reach	canonical	flowlog-syntax
+sg	canonical	flowlog-syntax
+sssp	canonical	flowlog-syntax
+tc	canonical	flowlog-syntax
+z3	canonical	flowlog-syntax

@@ -1,0 +1,131 @@
+diff --git a/flowlog-build/src/codegen/flow/non_recursive.rs b/flowlog-build/src/codegen/flow/non_recursive.rs
+index f5a42d3..7078444 100644
+--- a/flowlog-build/src/codegen/flow/non_recursive.rs
++++ b/flowlog-build/src/codegen/flow/non_recursive.rs
+@@ -74,7 +74,9 @@ impl CodeGen {
+         let mut flows = Vec::new();
+         let dedup_stats = self.dedup_nonrecursive();
+ 
+-        for (idb_fp, head_fps) in stratum.idb_to_heads_map() {
++        let mut idb_heads = stratum.idb_to_heads_map().iter().collect::<Vec<_>>();
++        idb_heads.sort_unstable_by_key(|(idb_fp, _)| **idb_fp);
++        for (idb_fp, head_fps) in idb_heads {
+             let output = self.find_global_ident(*idb_fp);
+             let outs: Vec<Ident> = head_fps
+                 .iter()
+diff --git a/flowlog-build/src/codegen/flow/recursive.rs b/flowlog-build/src/codegen/flow/recursive.rs
+index 7be665b..8ba1cab 100644
+--- a/flowlog-build/src/codegen/flow/recursive.rs
++++ b/flowlog-build/src/codegen/flow/recursive.rs
+@@ -238,7 +238,9 @@ impl CodeGen {
+         let mut next_bindings: HashMap<u64, Ident> = HashMap::new();
+         let mut union_stmts = Vec::new();
+ 
+-        for (idb_fp, head_fps) in idb_to_heads_map {
++        let mut idb_heads = idb_to_heads_map.iter().collect::<Vec<_>>();
++        idb_heads.sort_unstable_by_key(|(idb_fp, _)| **idb_fp);
++        for (idb_fp, head_fps) in idb_heads {
+             // Determine output binding name and union sources.
+             let next_ident = format_ident!("next_{}", idb_fp);
+             next_bindings.insert(*idb_fp, next_ident.clone());
+@@ -593,7 +595,9 @@ impl CodeGen {
+         let (mut stmts, plan) = self.prepare_loop_condition(condition, next_bindings)?;
+         let has_iterative = !iterative_fps.is_empty();
+ 
+-        for (fp, recursive_ident) in recursive_bindings {
++        let mut recursive = recursive_bindings.iter().collect::<Vec<_>>();
++        recursive.sort_unstable_by_key(|(fp, _)| **fp);
++        for (fp, recursive_ident) in recursive {
+             let next_ident = next_bindings.get(fp).ok_or_else(|| {
+                 CodegenError::internal(format!(
+                     "recursive relation fingerprint 0x{fp:016x} missing \
+diff --git a/flowlog-build/src/planner/stratum_planner.rs b/flowlog-build/src/planner/stratum_planner.rs
+index 7e3bc1c..5b60709 100644
+--- a/flowlog-build/src/planner/stratum_planner.rs
++++ b/flowlog-build/src/planner/stratum_planner.rs
+@@ -216,6 +216,13 @@ impl StratumPlanner {
+             atom_fps,
+             ..Self::default()
+         };
++        stratum_planner
++            .recursion_accumulate_recursive_collections
++            .sort_unstable();
++        stratum_planner
++            .recursion_iterative_recursive_collections
++            .sort_unstable();
++        stratum_planner.recursion_leave_collections.sort_unstable();
+         stratum_planner.deduplicate_transformations();
+ 
+         // Phase 8: Recursive split and metadata mappings
+@@ -412,16 +419,55 @@ impl fmt::Display for StratumPlanner {
+ // =========================================================================
+ impl StratumPlanner {
+     /// Dedup the per-rule materialized transformations by content
+-    /// fingerprint (first occurrence wins; order stays topological).
++    /// fingerprint and restore a canonical left-to-right topological order.
+     fn deduplicate_transformations(&mut self) {
+-        let mut seen = HashSet::new();
+-        self.transformations = self
++        fn visit(
++            fingerprint: u64,
++            transformations: &HashMap<u64, Transformation>,
++            seen: &mut HashSet<u64>,
++            ordered: &mut Vec<Transformation>,
++        ) {
++            if !seen.insert(fingerprint) {
++                return;
++            }
++            let Some(transformation) = transformations.get(&fingerprint) else {
++                return;
++            };
++            for input in transformation.input_fingerprints() {
++                visit(input, transformations, seen, ordered);
++            }
++            ordered.push(transformation.clone());
++        }
++
++        let mut transformations = HashMap::new();
++        let mut encounter_order = Vec::new();
++        for transformation in self
+             .rule_planners
+             .iter()
+             .flat_map(|planner| planner.transformations())
+-            .filter(|tx| seen.insert(tx.output().fingerprint()))
+-            .cloned()
+-            .collect();
++        {
++            let fingerprint = transformation.output().fingerprint();
++            if !transformations.contains_key(&fingerprint) {
++                transformations.insert(fingerprint, transformation.clone());
++                encounter_order.push(fingerprint);
++            }
++        }
++        let consumed = transformations
++            .values()
++            .flat_map(Transformation::input_fingerprints)
++            .collect::<HashSet<_>>();
++        let mut seen = HashSet::new();
++        let mut ordered = Vec::with_capacity(transformations.len());
++        for &fingerprint in &encounter_order {
++            if !consumed.contains(&fingerprint) {
++                visit(fingerprint, &transformations, &mut seen, &mut ordered);
++            }
++        }
++        encounter_order.sort_unstable();
++        for fingerprint in encounter_order {
++            visit(fingerprint, &transformations, &mut seen, &mut ordered);
++        }
++        self.transformations = ordered;
+     }
+ }
+ 
+@@ -535,7 +581,8 @@ impl StratumPlanner {
+             .difference(&recursion_output_fps)
+             .filter(|fp| available_fps.contains(fp))
+             .copied()
+-            .collect()
++            .collect();
++        self.recursion_enter_collections.sort_unstable();
+     }
+ 
+     /// Build the mapping from each IDB fingerprint to the rule heads fingerprints

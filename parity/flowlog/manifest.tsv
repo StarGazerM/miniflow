@@ -1,0 +1,11 @@
+comparison	Output.csv	canonical_comparison	parity_comparison	plain
+constant	Output.csv	canonical_constant	parity_constant	plain
+copy	Output.csv	canonical_copy	parity_copy	plain
+facts	Output.csv	canonical_facts	parity_facts	plain
+join	Output.csv	canonical_join	parity_join	plain
+negation	Output.csv	canonical_negation	parity_negation	plain
+projection	Output.csv	canonical_projection	parity_projection	plain
+reach	Reach.csv	canonical_reach	parity_reach	plain
+reach_profile	Reach.csv	canonical_reach_profile	parity_reach_profile	profile
+repeated	Output.csv	canonical_repeated	parity_repeated	plain
+union	Output.csv	canonical_union	parity_union	plain

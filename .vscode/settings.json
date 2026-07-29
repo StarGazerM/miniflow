@@ -1,0 +1,7 @@
+{
+    "rust-analyzer.cargo.targetDir": "/tmp/miniflow-rust-analyzer-target",
+    "rust-analyzer.cargo.extraEnv": {
+        "CARGO_CACHE_RUSTC_INFO": "0",
+        "CARGO_INCREMENTAL": "0"
+    }
+}

@@ -1,0 +1,8 @@
+.decl Input(x: int32)
+.input Input(IO="file", filename="Input.csv", delimiter=",")
+.decl Blocked(x: int32)
+.input Blocked(IO="file", filename="Blocked.csv", delimiter=",")
+
+.decl Output(x: int32)
+Output(x) :- Input(x), !Blocked(x).
+.output Output

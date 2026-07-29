@@ -1,0 +1,9 @@
+/target/
+/crates/*/program_log/
+
+# Local upstream checkouts used by the parity and inventory gates.
+/flowlog/
+/flowlog-bench/
+
+# Locally generated executable.
+/program
