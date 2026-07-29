@@ -50,6 +50,12 @@ pub const ANTIJOIN_POSITIVE_INPUT: OperatorKey =
 pub const ANTIJOIN_NEGATIVE_INPUT: OperatorKey =
     OperatorKey::new("miniflow.flowlog.antijoin.negative-input");
 
+/// FlowLog-compatible join through a projected tuple field.
+pub const TUPLE_EQUIJOIN: OperatorKey = OperatorKey::new("miniflow.flowlog.tuple-equijoin");
+
+/// Resolved relation input consumed by a FlowLog-compatible physical operator.
+pub const RELATION_INPUT: OperatorKey = OperatorKey::new("miniflow.flowlog.relation-input");
+
 /// Physical facts needed to render one FlowLog-compatible unary rule.
 #[derive(Clone)]
 pub struct SingleAtomPlan {
@@ -344,9 +350,108 @@ impl UnaryAntijoinPlan {
     }
 }
 
+/// Physical facts needed to join a tuple field with a scalar row column.
+#[derive(Clone)]
+pub struct TupleEquijoinPlan {
+    node: NodeId,
+    head: Atom,
+    target_relation: Relation,
+    tuple_atom: Atom,
+    tuple_relation: Relation,
+    row_atom: Atom,
+    row_relation: Relation,
+    projection: syn::Member,
+    key_column: usize,
+    value_column: usize,
+    tuple_fingerprint: u64,
+    row_fingerprint: u64,
+    join_fingerprint: u64,
+}
+
+impl TupleEquijoinPlan {
+    /// Return the physical operator node described by these facts.
+    #[must_use]
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
+    /// Return the rule head produced by the join.
+    #[must_use]
+    pub const fn head(&self) -> &Atom {
+        &self.head
+    }
+
+    /// Return the resolved output relation.
+    #[must_use]
+    pub const fn target_relation(&self) -> &Relation {
+        &self.target_relation
+    }
+
+    /// Return the tuple-valued source atom.
+    #[must_use]
+    pub const fn tuple_atom(&self) -> &Atom {
+        &self.tuple_atom
+    }
+
+    /// Return the tuple-valued source relation.
+    #[must_use]
+    pub const fn tuple_relation(&self) -> &Relation {
+        &self.tuple_relation
+    }
+
+    /// Return the scalar-row source atom.
+    #[must_use]
+    pub const fn row_atom(&self) -> &Atom {
+        &self.row_atom
+    }
+
+    /// Return the scalar-row source relation.
+    #[must_use]
+    pub const fn row_relation(&self) -> &Relation {
+        &self.row_relation
+    }
+
+    /// Return the tuple projection used as the join key.
+    #[must_use]
+    pub const fn projection(&self) -> &syn::Member {
+        &self.projection
+    }
+
+    /// Return the scalar-row key column.
+    #[must_use]
+    pub const fn key_column(&self) -> usize {
+        self.key_column
+    }
+
+    /// Return the scalar-row payload column.
+    #[must_use]
+    pub const fn value_column(&self) -> usize {
+        self.value_column
+    }
+
+    /// Return the tuple-input transformation fingerprint.
+    #[must_use]
+    pub const fn tuple_fingerprint(&self) -> u64 {
+        self.tuple_fingerprint
+    }
+
+    /// Return the scalar-row transformation fingerprint.
+    #[must_use]
+    pub const fn row_fingerprint(&self) -> u64 {
+        self.row_fingerprint
+    }
+
+    /// Return the join transformation fingerprint.
+    #[must_use]
+    pub const fn join_fingerprint(&self) -> u64 {
+        self.join_fingerprint
+    }
+}
+
 pub(crate) fn install(registry: &mut Registry) {
     registry.around::<PlanRule, _>(|context, request, next| {
-        if let Some(plan) = plan_unary_antijoin(&request)
+        if let Some(plan) = plan_tuple_equijoin(&request)
+            .or_else(|| plan_unary_antijoin(&request))
             .or_else(|| plan_direct_aggregate(&request))
             .or_else(|| plan_single_atom(&request))
         {
@@ -751,6 +856,148 @@ fn antijoin_output_arguments(
             }
         })
         .collect()
+}
+
+#[allow(clippy::too_many_lines)]
+fn plan_tuple_equijoin(request: &RuleRequest) -> Option<RulePlan> {
+    if request.recursive() {
+        return None;
+    }
+    let rule = request.rule();
+    let [head] = rule.heads.as_slice() else {
+        return None;
+    };
+    let [
+        BodyItem::Atom(first),
+        BodyItem::Atom(second),
+        BodyItem::Condition(Expr::Binary(eq)),
+    ] = rule.body.as_slice()
+    else {
+        return None;
+    };
+    if !matches!(eq.op, syn::BinOp::Eq(_))
+        || !request.initialized().contains(&first.relation)
+        || !request.initialized().contains(&second.relation)
+    {
+        return None;
+    }
+    let field_variable = |expression: &Expr| match expression {
+        Expr::Field(field) => Some((variable_name(&field.base)?, field.member.clone())),
+        _ => None,
+    };
+    let (tuple_atom, row_atom, projection, row_key) =
+        if let Some((tuple_name, member)) = field_variable(&eq.left) {
+            let key = dereferenced_variable_name(&eq.right)?;
+            if first
+                .arguments
+                .iter()
+                .any(|argument| variable_name(argument).as_deref() == Some(tuple_name.as_str()))
+            {
+                (first, second, member, key)
+            } else {
+                (second, first, member, key)
+            }
+        } else if let Some((tuple_name, member)) = field_variable(&eq.right) {
+            let key = dereferenced_variable_name(&eq.left)?;
+            if first
+                .arguments
+                .iter()
+                .any(|argument| variable_name(argument).as_deref() == Some(tuple_name.as_str()))
+            {
+                (first, second, member, key)
+            } else {
+                (second, first, member, key)
+            }
+        } else {
+            return None;
+        };
+    let [tuple_argument] = tuple_atom.arguments.as_slice() else {
+        return None;
+    };
+    let tuple_name = variable_name(tuple_argument)?;
+    let tuple_relation = request.catalog().relation(tuple_atom.relation);
+    let row_relation = request.catalog().relation(row_atom.relation);
+    let tuple_column_type = tuple_relation.columns.first()?;
+    let syn::Type::Tuple(_) = tuple_column_type else {
+        return None;
+    };
+    let row_names = row_atom
+        .arguments
+        .iter()
+        .map(variable_name)
+        .collect::<Option<Vec<_>>>()?;
+    let key_column = row_names.iter().position(|name| name == &row_key)?;
+    let head_names = head
+        .arguments
+        .iter()
+        .map(variable_name)
+        .collect::<Option<Vec<_>>>()?;
+    let value_columns = row_names
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            (index != key_column && head_names.contains(name)).then_some(index)
+        })
+        .collect_vec();
+    let [value_column] = value_columns.as_slice() else {
+        return None;
+    };
+
+    let tuple_bindings = BTreeMap::from([(tuple_name, 0)]);
+    let projection_expression: Expr = syn::parse_quote! { #tuple_argument.#projection };
+    let tuple_fingerprint = flowlog_fp::unary_expressions(
+        "row_to_kv",
+        flowlog_fp::relation(&relation_fingerprint_name(tuple_relation)),
+        vec![flowlog_arithmetic(
+            &projection_expression,
+            &tuple_bindings,
+            &row_relation.columns[key_column],
+        )?],
+        vec![flowlog_arithmetic(
+            tuple_argument,
+            &tuple_bindings,
+            tuple_column_type,
+        )?],
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let row_fingerprint = flowlog_fp::unary(
+        "row_to_kv",
+        flowlog_fp::relation(&relation_fingerprint_name(row_relation)),
+        [TransformationArgument::KV((false, key_column))],
+        [TransformationArgument::KV((false, *value_column))],
+    );
+    let join_fingerprint = flowlog_fp::join(
+        "jn_to_row",
+        tuple_fingerprint,
+        row_fingerprint,
+        [],
+        [
+            TransformationArgument::Jn((true, true, 0)),
+            TransformationArgument::Jn((false, false, 0)),
+        ],
+    );
+    let mut graph = Plan::default();
+    let tuple_input = graph.add_node(RELATION_INPUT, []);
+    let row_input = graph.add_node(RELATION_INPUT, []);
+    let node = graph.add_node(TUPLE_EQUIJOIN, [tuple_input, row_input]);
+    graph.facts_mut().insert(TupleEquijoinPlan {
+        node,
+        head: head.clone(),
+        target_relation: request.catalog().relation(head.relation).clone(),
+        tuple_atom: tuple_atom.clone(),
+        tuple_relation: tuple_relation.clone(),
+        row_atom: row_atom.clone(),
+        row_relation: row_relation.clone(),
+        projection,
+        key_column,
+        value_column: *value_column,
+        tuple_fingerprint,
+        row_fingerprint,
+        join_fingerprint,
+    });
+    Some(RulePlan::from_graph(graph, node))
 }
 
 fn select_single_operator(

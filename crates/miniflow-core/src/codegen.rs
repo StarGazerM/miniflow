@@ -7,17 +7,16 @@ use syn::{Expr, Result};
 
 use crate::compiler::{CompilerContext, Registry};
 use crate::flowlog_analysis::{
-    binary_expression_variables, dereferenced_variable_name, expression_mentions_ident,
-    expression_type, expression_variable_ident, expression_variables, flowlog_arithmetic,
-    flowlog_arithmetic_with, flowlog_comparison_operator, flowlog_data_type, flowlog_variable,
-    variable_name,
+    binary_expression_variables, expression_mentions_ident, expression_type,
+    expression_variable_ident, expression_variables, flowlog_arithmetic, flowlog_arithmetic_with,
+    flowlog_comparison_operator, flowlog_data_type, flowlog_variable, variable_name,
 };
 use crate::flowlog_fp;
 use crate::flowlog_fp::TransformationArgument;
 use crate::flowlog_plan::{
     DIRECT_AGGREGATE, DirectAggregatePlan, SINGLE_FILTER, SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP,
-    SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE, SingleAtomPlan, UNARY_ANTIJOIN, UnaryAntijoinPlan,
-    UnaryAntijoinStage,
+    SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE, SingleAtomPlan, TUPLE_EQUIJOIN, TupleEquijoinPlan,
+    UNARY_ANTIJOIN, UnaryAntijoinPlan, UnaryAntijoinStage,
 };
 use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId, Rule, Scc};
 use crate::pipeline::{PlanRule, PlanningCatalog, RuleRequest};
@@ -574,8 +573,9 @@ impl HirProgram {
             initialized.insert(target_relation);
             return Ok(vec![emitted]);
         }
-        if let Some((target_relation, emitted)) =
-            self.emit_flowlog_tuple_equijoin(rule_index, initialized)
+        if let Some((target_relation, emitted)) = planned
+            .as_ref()
+            .and_then(Self::render_flowlog_tuple_equijoin)
         {
             initialized.insert(target_relation);
             return Ok(vec![emitted]);
@@ -807,149 +807,43 @@ impl HirProgram {
         ))
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn emit_flowlog_tuple_equijoin(
-        &self,
-        rule_index: usize,
-        initialized: &BTreeSet<RelationId>,
-    ) -> Option<(RelationId, TokenStream)> {
-        let rule = &self.rules[rule_index];
-        let [head] = rule.heads.as_slice() else {
-            return None;
-        };
-        let [
-            BodyItem::Atom(first),
-            BodyItem::Atom(second),
-            BodyItem::Condition(Expr::Binary(eq)),
-        ] = rule.body.as_slice()
-        else {
-            return None;
-        };
-        if !matches!(eq.op, syn::BinOp::Eq(_))
-            || !initialized.contains(&first.relation)
-            || !initialized.contains(&second.relation)
-        {
+    fn render_flowlog_tuple_equijoin(plan: &RulePlan) -> Option<(RelationId, TokenStream)> {
+        let root = plan.root();
+        if plan.graph().nodes().get(root.index())?.operator() != TUPLE_EQUIJOIN {
             return None;
         }
-        let field_variable = |expression: &Expr| match expression {
-            Expr::Field(field) => Some((variable_name(&field.base)?, field.member.clone())),
-            _ => None,
-        };
-        let (tuple_atom, row_atom, projection, row_key) =
-            if let Some((tuple_name, member)) = field_variable(&eq.left) {
-                let key = dereferenced_variable_name(&eq.right)?;
-                if first
-                    .arguments
-                    .iter()
-                    .any(|arg| variable_name(arg).as_deref() == Some(tuple_name.as_str()))
-                {
-                    (first, second, member, key)
-                } else {
-                    (second, first, member, key)
-                }
-            } else if let Some((tuple_name, member)) = field_variable(&eq.right) {
-                let key = dereferenced_variable_name(&eq.left)?;
-                if first
-                    .arguments
-                    .iter()
-                    .any(|arg| variable_name(arg).as_deref() == Some(tuple_name.as_str()))
-                {
-                    (first, second, member, key)
-                } else {
-                    (second, first, member, key)
-                }
-            } else {
-                return None;
-            };
-        let [tuple_argument] = tuple_atom.arguments.as_slice() else {
-            return None;
-        };
-        let tuple_name = variable_name(tuple_argument)?;
-        let tuple_relation = &self.relations[tuple_atom.relation.0];
-        let row_relation = &self.relations[row_atom.relation.0];
-        let tuple_column_type = tuple_relation.columns.first()?;
-        let syn::Type::Tuple(_) = tuple_column_type else {
-            return None;
-        };
-        let row_names = row_atom
-            .arguments
+        let physical = plan
+            .graph()
+            .facts()
+            .relation::<TupleEquijoinPlan>()
             .iter()
-            .map(variable_name)
-            .collect::<Option<Vec<_>>>()?;
-        let key_column = row_names.iter().position(|name| name == &row_key)?;
-        let head_names = head
-            .arguments
-            .iter()
-            .map(variable_name)
-            .collect::<Option<Vec<_>>>()?;
-        let value_columns = row_names
-            .iter()
-            .enumerate()
-            .filter_map(|(index, name)| {
-                (index != key_column && head_names.contains(name)).then_some(index)
-            })
-            .collect_vec();
-        let [value_column] = value_columns.as_slice() else {
-            return None;
-        };
-
-        let tuple_bindings = BTreeMap::from([(tuple_name, 0)]);
+            .find(|physical| physical.node() == root)?;
+        let tuple_argument = physical.tuple_atom().arguments.first()?;
+        let tuple_bindings = BTreeMap::from([(variable_name(tuple_argument)?, 0)]);
+        let projection = physical.projection();
         let projection_expression: Expr = syn::parse_quote! { #tuple_argument.#projection };
-        let tuple_plan = flowlog_fp::unary_expressions(
-            "row_to_kv",
-            flowlog_fp::relation(&flowlog_relation_fingerprint_name(tuple_relation)),
-            vec![flowlog_arithmetic(
-                &projection_expression,
-                &tuple_bindings,
-                &row_relation.columns[key_column],
-            )?],
-            vec![flowlog_arithmetic(
-                tuple_argument,
-                &tuple_bindings,
-                tuple_column_type,
-            )?],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
-        let row_plan = flowlog_fp::unary(
-            "row_to_kv",
-            flowlog_fp::relation(&flowlog_relation_fingerprint_name(row_relation)),
-            [TransformationArgument::KV((false, key_column))],
-            [TransformationArgument::KV((false, *value_column))],
-        );
-        let join_plan = flowlog_fp::join(
-            "jn_to_row",
-            tuple_plan,
-            row_plan,
-            [],
-            [
-                TransformationArgument::Jn((true, true, 0)),
-                TransformationArgument::Jn((false, false, 0)),
-            ],
-        );
-        let tuple_transform = format_ident!("t_{tuple_plan}");
-        let tuple_arrangement = format_ident!("t_{tuple_plan}_arr");
-        let row_transform = format_ident!("t_{row_plan}");
-        let row_arrangement = format_ident!("t_{row_plan}_arr");
-        let join_transform = format_ident!("t_{join_plan}");
-        let tuple_collection = collection_ident(tuple_relation);
-        let row_collection = collection_ident(row_relation);
-        let target = collection_ident(&self.relations[head.relation.0]);
-        let tuple_row_type = tuple_type(tuple_relation);
-        let row_type = tuple_type(row_relation);
-        let tuple_rows = row_bindings_flowlog(tuple_relation);
+        let tuple_transform = format_ident!("t_{}", physical.tuple_fingerprint());
+        let tuple_arrangement = format_ident!("t_{}_arr", physical.tuple_fingerprint());
+        let row_transform = format_ident!("t_{}", physical.row_fingerprint());
+        let row_arrangement = format_ident!("t_{}_arr", physical.row_fingerprint());
+        let join_transform = format_ident!("t_{}", physical.join_fingerprint());
+        let tuple_collection = collection_ident(physical.tuple_relation());
+        let row_collection = collection_ident(physical.row_relation());
+        let target = collection_ident(physical.target_relation());
+        let tuple_row_type = tuple_type(physical.tuple_relation());
+        let row_type = tuple_type(physical.row_relation());
+        let tuple_rows = row_bindings_flowlog(physical.tuple_relation());
         let tuple_pattern = tuple(tuple_rows.iter().map(|row| quote! { #row }));
         let projected =
             emit_flowlog_expression(&projection_expression, &tuple_bindings, &tuple_rows)?;
         let tuple_value = &tuple_rows[0];
-        let row_rows = row_bindings_flowlog(row_relation);
+        let row_rows = row_bindings_flowlog(physical.row_relation());
         let row_pattern = tuple(row_rows.iter().map(|row| quote! { #row }));
-        let row_key_value = &row_rows[key_column];
-        let row_payload = &row_rows[*value_column];
+        let row_key_value = &row_rows[physical.key_column()];
+        let row_payload = &row_rows[physical.value_column()];
 
         Some((
-            head.relation,
+            physical.head().relation,
             quote! {
                 let #tuple_transform = #tuple_collection
                     .clone()
