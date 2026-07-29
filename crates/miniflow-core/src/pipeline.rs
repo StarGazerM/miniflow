@@ -18,13 +18,19 @@ use crate::{lower, parse};
 pub struct PlanningCatalog {
     relations: Arc<[Relation]>,
     rules: Arc<[Rule]>,
+    outputs: Option<Arc<[RelationId]>>,
 }
 
 impl PlanningCatalog {
-    pub(crate) fn new(relations: Vec<Relation>, rules: Vec<Rule>) -> Self {
+    pub(crate) fn new(
+        relations: Vec<Relation>,
+        rules: Vec<Rule>,
+        outputs: Option<Vec<RelationId>>,
+    ) -> Self {
         Self {
             relations: relations.into(),
             rules: rules.into(),
+            outputs: outputs.map(Into::into),
         }
     }
 
@@ -38,6 +44,12 @@ impl PlanningCatalog {
     #[must_use]
     pub fn rules(&self) -> &[Rule] {
         &self.rules
+    }
+
+    /// Return explicitly exposed relations, or `None` when all are exposed.
+    #[must_use]
+    pub fn outputs(&self) -> Option<&[RelationId]> {
+        self.outputs.as_deref()
     }
 }
 

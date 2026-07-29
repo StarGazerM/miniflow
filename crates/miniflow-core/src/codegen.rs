@@ -13,12 +13,13 @@ use crate::flowlog_analysis::{
 use crate::flowlog_fp;
 use crate::flowlog_fp::TransformationArgument;
 use crate::flowlog_plan::{
-    BINARY_JOIN, BinaryJoinPlan, DIRECT_AGGREGATE, DirectAggregatePlan, JoinSidePlan,
-    SINGLE_FILTER, SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP, SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE,
-    SYMMETRIC_CLOSURE, SingleAtomPlan, SymmetricClosurePlan, THREE_ATOM_JOIN, TUPLE_EQUIJOIN,
-    ThreeAtomJoinPlan, TupleEquijoinPlan, UNARY_ANTIJOIN, UnaryAntijoinPlan, UnaryAntijoinStage,
+    BINARY_JOIN, BinaryJoinPlan, DIRECT_AGGREGATE, DirectAggregatePlan, JoinSidePlan, MUTUAL_UNARY,
+    MutualUnaryPlan, SINGLE_FILTER, SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP, SINGLE_IDENTITY,
+    SINGLE_MAP_IN_PLACE, SYMMETRIC_CLOSURE, SingleAtomPlan, SymmetricClosurePlan, THREE_ATOM_JOIN,
+    TUPLE_EQUIJOIN, ThreeAtomJoinPlan, TupleEquijoinPlan, UNARY_ANTIJOIN, UnaryAntijoinPlan,
+    UnaryAntijoinStage,
 };
-use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId, Rule, Scc};
+use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId, Scc};
 use crate::pipeline::{PlanRule, PlanScc, PlanningCatalog, RuleRequest, SccRequest};
 use crate::plan::OperatorKey;
 use crate::rule_plan::{
@@ -227,7 +228,13 @@ impl HirProgram {
 
         let mut stages = Vec::with_capacity(self.sccs.len());
         let mut emitted_transformations = BTreeSet::new();
-        let catalog = PlanningCatalog::new(self.relations.clone(), self.rules.clone());
+        let catalog = PlanningCatalog::new(
+            self.relations.clone(),
+            self.rules.clone(),
+            self.outputs
+                .as_ref()
+                .map(|outputs| outputs.iter().copied().sorted().collect()),
+        );
         let mut initialized = edbs
             .iter()
             .map(|relation| relation.id)
@@ -1192,7 +1199,7 @@ impl HirProgram {
             initialized.insert(target);
             return Ok(emitted);
         }
-        if let Some((target, emitted)) = self.emit_flowlog_mutual_unary(scc, initialized) {
+        if let Some((target, emitted)) = Self::render_flowlog_mutual_unary(&planned) {
             initialized.insert(target);
             return Ok(emitted);
         }
@@ -1340,107 +1347,23 @@ impl HirProgram {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn emit_flowlog_mutual_unary(
-        &self,
-        scc: &Scc,
-        initialized: &BTreeSet<RelationId>,
-    ) -> Option<(RelationId, TokenStream)> {
-        if scc.rules.len() != 2 {
+    fn render_flowlog_mutual_unary(plan: &SccPlan) -> Option<(RelationId, TokenStream)> {
+        let root = plan.root();
+        if plan.graph().nodes().get(root.index())?.operator() != MUTUAL_UNARY {
             return None;
         }
-        let heads = scc
-            .rules
+        let physical = plan
+            .graph()
+            .facts()
+            .relation::<MutualUnaryPlan>()
             .iter()
-            .map(|&index| {
-                let [head] = self.rules[index].heads.as_slice() else {
-                    return None;
-                };
-                Some(head.relation)
-            })
-            .collect::<Option<BTreeSet<_>>>()?;
-        if heads.len() != 2 {
-            return None;
-        }
-        let base_id = heads
-            .iter()
-            .find(|relation| initialized.contains(relation))
-            .copied()?;
-        let other_id = heads
-            .iter()
-            .find(|&&relation| relation != base_id)
-            .copied()?;
-        let rule_for = |target: RelationId| {
-            scc.rules
-                .iter()
-                .map(|&index| &self.rules[index])
-                .find(|rule| rule.heads[0].relation == target)
-        };
-        let base_rule = rule_for(base_id)?;
-        let other_rule = rule_for(other_id)?;
-        let [BodyItem::Atom(other_source), BodyItem::Atom(edge)] = base_rule.body.as_slice() else {
-            return None;
-        };
-        let [BodyItem::Atom(base_source), BodyItem::Atom(other_edge)] = other_rule.body.as_slice()
-        else {
-            return None;
-        };
-        if other_source.relation != other_id
-            || base_source.relation != base_id
-            || edge.relation != other_edge.relation
-            || self.relations[base_id.0].columns.len() != 1
-            || self.relations[other_id.0].columns.len() != 1
-        {
-            return None;
-        }
-        let edge_relation = &self.relations[edge.relation.0];
-        if edge_relation.columns.len() != 2 {
-            return None;
-        }
-        let validate = |rule: &Rule, source: &Atom, edge: &Atom| {
-            let source_name = variable_name(&source.arguments[0])?;
-            let edge_source = variable_name(&edge.arguments[0])?;
-            let edge_target = variable_name(&edge.arguments[1])?;
-            (source_name == edge_source
-                && variable_name(&rule.heads[0].arguments[0])? == edge_target)
-                .then_some(())
-        };
-        validate(base_rule, other_source, edge)?;
-        validate(other_rule, base_source, other_edge)?;
-
-        let base_relation = &self.relations[base_id.0];
-        let other_relation = &self.relations[other_id.0];
-        let edge_plan = flowlog_fp::unary(
-            "row_to_kv",
-            flowlog_fp::relation(&flowlog_relation_fingerprint_name(edge_relation)),
-            [TransformationArgument::KV((false, 0))],
-            [TransformationArgument::KV((false, 1))],
-        );
-        let base_plan = flowlog_fp::unary(
-            "row_to_kv",
-            flowlog_fp::relation(&flowlog_relation_fingerprint_name(base_relation)),
-            [TransformationArgument::KV((false, 0))],
-            [],
-        );
-        let other_plan = flowlog_fp::unary(
-            "row_to_kv",
-            flowlog_fp::relation(&flowlog_relation_fingerprint_name(other_relation)),
-            [TransformationArgument::KV((false, 0))],
-            [],
-        );
-        let join = |source_plan| {
-            flowlog_fp::join(
-                "jn_to_row",
-                source_plan,
-                edge_plan,
-                [],
-                [TransformationArgument::Jn((false, false, 0))],
-            )
-        };
-        let base_to_other = join(base_plan);
-        let other_to_base = join(other_plan);
-        let edge_transform = format_ident!("t_{edge_plan}");
-        let edge_arrangement = format_ident!("t_{edge_plan}_arr");
-        let entered_edge = format_ident!("in_t_{edge_plan}_arr");
+            .find(|physical| physical.node == root)?;
+        let base_relation = &physical.base_relation;
+        let other_relation = &physical.other_relation;
+        let edge_relation = &physical.edge_relation;
+        let edge_transform = format_ident!("t_{}", physical.edge_fingerprint);
+        let edge_arrangement = format_ident!("t_{}_arr", physical.edge_fingerprint);
+        let entered_edge = format_ident!("in_t_{}_arr", physical.edge_fingerprint);
         let edge_collection = collection_ident(edge_relation);
         let base_collection = collection_ident(base_relation);
         let other_collection = collection_ident(other_relation);
@@ -1449,18 +1372,14 @@ impl HirProgram {
         let base_variable = variable_ident(base_relation);
         let recursive_other = inner_collection_ident(other_relation);
         let other_variable = variable_ident(other_relation);
-        let base_transform = format_ident!("t_{base_plan}");
-        let base_arrangement = format_ident!("t_{base_plan}_arr");
-        let other_transform = format_ident!("t_{other_plan}");
-        let other_arrangement = format_ident!("t_{other_plan}_arr");
-        let derive_other = format_ident!("t_{base_to_other}");
-        let derive_base = format_ident!("t_{other_to_base}");
-        let next_base_plan =
-            flowlog_fp::relation(&flowlog_relation_fingerprint_name(base_relation));
-        let next_other_plan =
-            flowlog_fp::relation(&flowlog_relation_fingerprint_name(other_relation));
-        let next_base = format_ident!("next_{next_base_plan}");
-        let next_other = format_ident!("next_{next_other_plan}");
+        let base_transform = format_ident!("t_{}", physical.base_fingerprint);
+        let base_arrangement = format_ident!("t_{}_arr", physical.base_fingerprint);
+        let other_transform = format_ident!("t_{}", physical.other_fingerprint);
+        let other_arrangement = format_ident!("t_{}_arr", physical.other_fingerprint);
+        let derive_other = format_ident!("t_{}", physical.base_to_other_fingerprint);
+        let derive_base = format_ident!("t_{}", physical.other_to_base_fingerprint);
+        let next_base = format_ident!("next_{}", physical.base_relation_fingerprint);
+        let next_other = format_ident!("next_{}", physical.other_relation_fingerprint);
         let base_next = quote! {
             let #next_base = #derive_base
                 .clone()
@@ -1476,40 +1395,37 @@ impl HirProgram {
                     old.is_none().then_some(SEMIRING_ONE)
                 });
         };
-        let (next_emissions, sets) = if next_base_plan < next_other_plan {
-            (
-                quote! { #base_next #other_next },
-                quote! {
-                    #base_variable.set(#next_base.clone());
-                    #other_variable.set(#next_other.clone());
-                },
-            )
-        } else {
-            (
-                quote! { #other_next #base_next },
-                quote! {
-                    #other_variable.set(#next_other.clone());
-                    #base_variable.set(#next_base.clone());
-                },
-            )
-        };
-        let expose_other = self
-            .outputs
-            .as_ref()
-            .is_none_or(|outputs| outputs.contains(&other_id));
-        let target = if expose_other {
+        let (next_emissions, sets) =
+            if physical.base_relation_fingerprint < physical.other_relation_fingerprint {
+                (
+                    quote! { #base_next #other_next },
+                    quote! {
+                        #base_variable.set(#next_base.clone());
+                        #other_variable.set(#next_other.clone());
+                    },
+                )
+            } else {
+                (
+                    quote! { #other_next #base_next },
+                    quote! {
+                        #other_variable.set(#next_other.clone());
+                        #base_variable.set(#next_base.clone());
+                    },
+                )
+            };
+        let target = if physical.expose_other {
             quote! { (#base_collection, #other_collection) }
         } else {
             quote! { #base_collection }
         };
-        let leave = if expose_other {
+        let leave = if physical.expose_other {
             quote! { (#next_base.leave(scope), #next_other.leave(scope)) }
         } else {
             quote! { #next_base.leave(scope) }
         };
 
         Some((
-            base_id,
+            base_relation.id,
             quote! {
                 let #edge_transform = #edge_collection
                     .clone()

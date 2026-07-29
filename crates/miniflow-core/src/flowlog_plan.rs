@@ -66,6 +66,9 @@ pub const THREE_ATOM_JOIN: OperatorKey = OperatorKey::new("miniflow.flowlog.thre
 /// FlowLog-compatible symmetric transitive closure region.
 pub const SYMMETRIC_CLOSURE: OperatorKey = OperatorKey::new("miniflow.flowlog.symmetric-closure");
 
+/// FlowLog-compatible mutually recursive unary reachability region.
+pub const MUTUAL_UNARY: OperatorKey = OperatorKey::new("miniflow.flowlog.mutual-unary");
+
 /// Physical facts needed to render one FlowLog-compatible unary rule.
 #[derive(Clone)]
 pub struct SingleAtomPlan {
@@ -558,6 +561,35 @@ pub struct SymmetricClosurePlan {
     pub join_fingerprint: u64,
 }
 
+/// Physical facts needed to render mutually recursive unary relations.
+#[derive(Clone)]
+pub struct MutualUnaryPlan {
+    /// Physical operator node described by these facts.
+    pub node: NodeId,
+    /// Initially materialized recursive relation.
+    pub base_relation: Relation,
+    /// Mutually derived recursive relation.
+    pub other_relation: Relation,
+    /// Shared binary edge relation.
+    pub edge_relation: Relation,
+    /// Arranged edge transformation fingerprint.
+    pub edge_fingerprint: u64,
+    /// Base arrangement transformation fingerprint.
+    pub base_fingerprint: u64,
+    /// Base recursive relation fingerprint used for its next binding.
+    pub base_relation_fingerprint: u64,
+    /// Other arrangement transformation fingerprint.
+    pub other_fingerprint: u64,
+    /// Other recursive relation fingerprint used for its next binding.
+    pub other_relation_fingerprint: u64,
+    /// Base-to-other join fingerprint.
+    pub base_to_other_fingerprint: u64,
+    /// Other-to-base join fingerprint.
+    pub other_to_base_fingerprint: u64,
+    /// Whether the second recursive relation is externally visible.
+    pub expose_other: bool,
+}
+
 pub(crate) fn install(registry: &mut Registry) {
     registry.around::<PlanRule, _>(|context, request, next| {
         if let Some(plan) = plan_three_atom_join(&request)
@@ -573,7 +605,8 @@ pub(crate) fn install(registry: &mut Registry) {
         }
     });
     registry.around::<PlanScc, _>(|context, request, next| {
-        if let Some(plan) = plan_symmetric_closure(&request) {
+        if let Some(plan) = plan_symmetric_closure(&request).or_else(|| plan_mutual_unary(&request))
+        {
             Ok(plan)
         } else {
             next.call(context, request)
@@ -683,6 +716,129 @@ fn plan_symmetric_closure(request: &SccRequest) -> Option<SccPlan> {
         left_fingerprint,
         right_fingerprint,
         join_fingerprint,
+    });
+    Some(SccPlan::from_graph(graph, node))
+}
+
+#[allow(clippy::too_many_lines)]
+fn plan_mutual_unary(request: &SccRequest) -> Option<SccPlan> {
+    let scc = request.scc();
+    if !scc.recursive || scc.rules.len() != 2 {
+        return None;
+    }
+    let heads = scc
+        .rules
+        .iter()
+        .map(|&index| {
+            let [head] = request.catalog().rules()[index].heads.as_slice() else {
+                return None;
+            };
+            Some(head.relation)
+        })
+        .collect::<Option<std::collections::BTreeSet<_>>>()?;
+    if heads.len() != 2 {
+        return None;
+    }
+    let base_id = heads
+        .iter()
+        .find(|relation| request.initialized().contains(relation))
+        .copied()?;
+    let other_id = heads
+        .iter()
+        .find(|&&relation| relation != base_id)
+        .copied()?;
+    let rule_for = |target| {
+        scc.rules
+            .iter()
+            .map(|&index| &request.catalog().rules()[index])
+            .find(|rule| rule.heads[0].relation == target)
+    };
+    let base_rule = rule_for(base_id)?;
+    let other_rule = rule_for(other_id)?;
+    let [BodyItem::Atom(other_source), BodyItem::Atom(edge)] = base_rule.body.as_slice() else {
+        return None;
+    };
+    let [BodyItem::Atom(base_source), BodyItem::Atom(other_edge)] = other_rule.body.as_slice()
+    else {
+        return None;
+    };
+    if other_source.relation != other_id
+        || base_source.relation != base_id
+        || edge.relation != other_edge.relation
+        || request.catalog().relation(base_id).columns.len() != 1
+        || request.catalog().relation(other_id).columns.len() != 1
+    {
+        return None;
+    }
+    let edge_relation = request.catalog().relation(edge.relation);
+    if edge_relation.columns.len() != 2 {
+        return None;
+    }
+    let validate = |rule: &crate::hir::Rule, source: &Atom, edge: &Atom| {
+        let source_name = variable_name(&source.arguments[0])?;
+        let edge_source = variable_name(&edge.arguments[0])?;
+        let edge_target = variable_name(&edge.arguments[1])?;
+        (source_name == edge_source && variable_name(&rule.heads[0].arguments[0])? == edge_target)
+            .then_some(())
+    };
+    validate(base_rule, other_source, edge)?;
+    validate(other_rule, base_source, other_edge)?;
+
+    let base_relation = request.catalog().relation(base_id);
+    let other_relation = request.catalog().relation(other_id);
+    let edge_fingerprint = flowlog_fp::unary(
+        "row_to_kv",
+        flowlog_fp::relation(&relation_fingerprint_name(edge_relation)),
+        [TransformationArgument::KV((false, 0))],
+        [TransformationArgument::KV((false, 1))],
+    );
+    let base_relation_fingerprint = flowlog_fp::relation(&relation_fingerprint_name(base_relation));
+    let other_relation_fingerprint =
+        flowlog_fp::relation(&relation_fingerprint_name(other_relation));
+    let base_fingerprint = flowlog_fp::unary(
+        "row_to_kv",
+        base_relation_fingerprint,
+        [TransformationArgument::KV((false, 0))],
+        [],
+    );
+    let other_fingerprint = flowlog_fp::unary(
+        "row_to_kv",
+        other_relation_fingerprint,
+        [TransformationArgument::KV((false, 0))],
+        [],
+    );
+    let join = |source_fingerprint| {
+        flowlog_fp::join(
+            "jn_to_row",
+            source_fingerprint,
+            edge_fingerprint,
+            [],
+            [TransformationArgument::Jn((false, false, 0))],
+        )
+    };
+    let base_to_other_fingerprint = join(base_fingerprint);
+    let other_to_base_fingerprint = join(other_fingerprint);
+    let expose_other = request
+        .catalog()
+        .outputs()
+        .is_none_or(|outputs| outputs.contains(&other_id));
+    let mut graph = Plan::default();
+    let base_input = graph.add_node(RELATION_INPUT, []);
+    let edge_input = graph.add_node(RELATION_INPUT, []);
+    let node = graph.add_node(MUTUAL_UNARY, [base_input, edge_input]);
+    graph.facts_mut().insert(MutualUnaryPlan {
+        node,
+        base_relation: base_relation.clone(),
+        other_relation: other_relation.clone(),
+        edge_relation: edge_relation.clone(),
+        edge_fingerprint,
+        base_fingerprint,
+        base_relation_fingerprint,
+        other_fingerprint,
+        other_relation_fingerprint,
+        base_to_other_fingerprint,
+        other_to_base_fingerprint,
+        expose_other,
     });
     Some(SccPlan::from_graph(graph, node))
 }
