@@ -39,6 +39,17 @@ pub const SINGLE_FLAT_MAP: OperatorKey = OperatorKey::new("miniflow.flowlog.sing
 /// FlowLog-compatible direct aggregate maintenance.
 pub const DIRECT_AGGREGATE: OperatorKey = OperatorKey::new("miniflow.flowlog.direct-aggregate");
 
+/// FlowLog-compatible unary antijoin chain.
+pub const UNARY_ANTIJOIN: OperatorKey = OperatorKey::new("miniflow.flowlog.unary-antijoin");
+
+/// Positive arranged input of a FlowLog-compatible antijoin.
+pub const ANTIJOIN_POSITIVE_INPUT: OperatorKey =
+    OperatorKey::new("miniflow.flowlog.antijoin.positive-input");
+
+/// Negative arranged input of a FlowLog-compatible antijoin.
+pub const ANTIJOIN_NEGATIVE_INPUT: OperatorKey =
+    OperatorKey::new("miniflow.flowlog.antijoin.negative-input");
+
 /// Physical facts needed to render one FlowLog-compatible unary rule.
 #[derive(Clone)]
 pub struct SingleAtomPlan {
@@ -193,16 +204,152 @@ impl DirectAggregatePlan {
     }
 }
 
+/// One negative input in a FlowLog-compatible unary antijoin chain.
+#[derive(Clone)]
+pub struct UnaryAntijoinStage {
+    negative: Atom,
+    relation: Relation,
+    keys: Vec<(usize, usize)>,
+    state_fingerprint: u64,
+    negative_fingerprint: u64,
+    output_fingerprint: u64,
+    state_keys: Vec<String>,
+    state_values: Vec<String>,
+    final_stage: bool,
+}
+
+impl UnaryAntijoinStage {
+    /// Return the negative atom consumed by this stage.
+    #[must_use]
+    pub const fn negative(&self) -> &Atom {
+        &self.negative
+    }
+
+    /// Return the resolved negative relation.
+    #[must_use]
+    pub const fn relation(&self) -> &Relation {
+        &self.relation
+    }
+
+    /// Return `(state-column, negative-column)` key correspondences.
+    #[must_use]
+    pub fn keys(&self) -> &[(usize, usize)] {
+        &self.keys
+    }
+
+    /// Return the input-state transformation fingerprint.
+    #[must_use]
+    pub const fn state_fingerprint(&self) -> u64 {
+        self.state_fingerprint
+    }
+
+    /// Return the negative-input transformation fingerprint.
+    #[must_use]
+    pub const fn negative_fingerprint(&self) -> u64 {
+        self.negative_fingerprint
+    }
+
+    /// Return the output transformation fingerprint.
+    #[must_use]
+    pub const fn output_fingerprint(&self) -> u64 {
+        self.output_fingerprint
+    }
+
+    /// Return the names carried in the state key.
+    #[must_use]
+    pub fn state_keys(&self) -> &[String] {
+        &self.state_keys
+    }
+
+    /// Return the names carried in the state value.
+    #[must_use]
+    pub fn state_values(&self) -> &[String] {
+        &self.state_values
+    }
+
+    /// Report whether this stage produces the final row instead of another key.
+    #[must_use]
+    pub const fn final_stage(&self) -> bool {
+        self.final_stage
+    }
+}
+
+/// Physical facts needed to render a FlowLog-compatible unary antijoin chain.
+#[derive(Clone)]
+pub struct UnaryAntijoinPlan {
+    node: NodeId,
+    head: Atom,
+    target_relation: Relation,
+    positive: Atom,
+    positive_relation: Relation,
+    positive_keys: Vec<usize>,
+    positive_values: Vec<usize>,
+    positive_fingerprint: u64,
+    stages: Vec<UnaryAntijoinStage>,
+}
+
+impl UnaryAntijoinPlan {
+    /// Return the physical operator node described by these facts.
+    #[must_use]
+    pub const fn node(&self) -> NodeId {
+        self.node
+    }
+
+    /// Return the rule head produced by the chain.
+    #[must_use]
+    pub const fn head(&self) -> &Atom {
+        &self.head
+    }
+
+    /// Return the resolved output relation.
+    #[must_use]
+    pub const fn target_relation(&self) -> &Relation {
+        &self.target_relation
+    }
+
+    /// Return the chain's positive source atom.
+    #[must_use]
+    pub const fn positive(&self) -> &Atom {
+        &self.positive
+    }
+
+    /// Return the resolved positive source relation.
+    #[must_use]
+    pub const fn positive_relation(&self) -> &Relation {
+        &self.positive_relation
+    }
+
+    /// Return positive columns placed in the state key.
+    #[must_use]
+    pub fn positive_keys(&self) -> &[usize] {
+        &self.positive_keys
+    }
+
+    /// Return positive columns placed in the state value.
+    #[must_use]
+    pub fn positive_values(&self) -> &[usize] {
+        &self.positive_values
+    }
+
+    /// Return the positive-input transformation fingerprint.
+    #[must_use]
+    pub const fn positive_fingerprint(&self) -> u64 {
+        self.positive_fingerprint
+    }
+
+    /// Return the ordered negative stages.
+    #[must_use]
+    pub fn stages(&self) -> &[UnaryAntijoinStage] {
+        &self.stages
+    }
+}
+
 pub(crate) fn install(registry: &mut Registry) {
     registry.around::<PlanRule, _>(|context, request, next| {
-        if let Some(plan) = plan_single_atom(&request) {
-            Ok(plan)
-        } else {
-            next.call(context, request)
-        }
-    });
-    registry.around::<PlanRule, _>(|context, request, next| {
-        if let Some(plan) = plan_direct_aggregate(&request) {
+        if let Some(plan) = plan_unary_antijoin(&request)
+            .or_else(|| plan_direct_aggregate(&request))
+            .or_else(|| plan_single_atom(&request))
+        {
             Ok(plan)
         } else {
             next.call(context, request)
@@ -383,6 +530,227 @@ fn plan_direct_aggregate(request: &RuleRequest) -> Option<RulePlan> {
         target_initialized: request.initialized().contains(&head.relation),
     });
     Some(RulePlan::from_graph(graph, node))
+}
+
+#[allow(clippy::too_many_lines)]
+fn plan_unary_antijoin(request: &RuleRequest) -> Option<RulePlan> {
+    if request.recursive() {
+        return None;
+    }
+    let rule = request.rule();
+    let [head] = rule.heads.as_slice() else {
+        return None;
+    };
+    let [BodyItem::Atom(positive), rest @ ..] = rule.body.as_slice() else {
+        return None;
+    };
+    let negatives = rest
+        .iter()
+        .map(|item| match item {
+            BodyItem::NegatedAtom(atom) => Some(atom),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if negatives.is_empty()
+        || request.initialized().contains(&head.relation)
+        || !request.initialized().contains(&positive.relation)
+        || negatives
+            .iter()
+            .any(|atom| !request.initialized().contains(&atom.relation))
+    {
+        return None;
+    }
+    let head_variables = head
+        .arguments
+        .iter()
+        .map(variable_name)
+        .collect::<Option<Vec<_>>>()?;
+    let positive_variables = positive
+        .arguments
+        .iter()
+        .map(|argument| {
+            matches!(argument, Expr::Infer(_))
+                .then_some(None)
+                .or_else(|| variable_name(argument).map(Some))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if head_variables
+        .iter()
+        .any(|name| !positive_variables.iter().flatten().any(|item| item == name))
+    {
+        return None;
+    }
+
+    let first_negative_variables = negatives[0]
+        .arguments
+        .iter()
+        .filter_map(variable_name)
+        .collect::<Vec<_>>();
+    let positive_keys = positive_variables
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            name.as_ref()
+                .filter(|name| first_negative_variables.contains(name))
+                .map(|_| index)
+        })
+        .collect_vec();
+    let positive_values = positive_variables
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            name.as_ref()
+                .filter(|name| head_variables.contains(name) && !positive_keys.contains(&index))
+                .map(|_| index)
+        })
+        .collect_vec();
+    let positive_relation = request.catalog().relation(positive.relation);
+    let positive_fingerprint = flowlog_fp::unary(
+        "row_to_kv",
+        flowlog_fp::relation(&relation_fingerprint_name(positive_relation)),
+        positive_keys
+            .iter()
+            .map(|&index| TransformationArgument::KV((false, index))),
+        positive_values
+            .iter()
+            .map(|&index| TransformationArgument::KV((false, index))),
+    );
+
+    let mut state_fingerprint = positive_fingerprint;
+    let mut state_keys = positive_keys
+        .iter()
+        .map(|&index| positive_variables[index].clone().expect("key variable"))
+        .collect_vec();
+    let mut state_values = positive_values
+        .iter()
+        .map(|&index| positive_variables[index].clone().expect("value variable"))
+        .collect_vec();
+    let mut stages = Vec::with_capacity(negatives.len());
+    let mut graph = Plan::default();
+    let mut state_node = graph.add_node(ANTIJOIN_POSITIVE_INPUT, []);
+    for (stage_index, negative) in negatives.iter().enumerate() {
+        let relation = request.catalog().relation(negative.relation);
+        let (keys, constraints) =
+            analyze_negative_antijoin_input(negative, relation, &state_keys, &state_values)?;
+        let negative_fingerprint = flowlog_fp::unary_expressions(
+            "row_to_kv",
+            flowlog_fp::relation(&relation_fingerprint_name(relation)),
+            keys.iter()
+                .map(|(_, index)| flowlog_fp::ArithmeticArgument {
+                    init: flowlog_fp::FactorArgument::Var(TransformationArgument::KV((
+                        false, *index,
+                    ))),
+                    rest: Vec::new(),
+                })
+                .collect(),
+            Vec::new(),
+            constraints,
+            Vec::new(),
+            Vec::new(),
+        );
+        let output_arguments =
+            antijoin_output_arguments(&head_variables, &state_keys, &state_values)?;
+        let final_stage = stage_index + 1 == negatives.len();
+        let output_fingerprint = if final_stage {
+            flowlog_fp::join(
+                "njn_to_row",
+                negative_fingerprint,
+                state_fingerprint,
+                [],
+                output_arguments,
+            )
+        } else {
+            flowlog_fp::join(
+                "njn_to_kv",
+                negative_fingerprint,
+                state_fingerprint,
+                output_arguments,
+                [],
+            )
+        };
+        let negative_node = graph.add_node(ANTIJOIN_NEGATIVE_INPUT, []);
+        state_node = graph.add_node(UNARY_ANTIJOIN, [state_node, negative_node]);
+        stages.push(UnaryAntijoinStage {
+            negative: (*negative).clone(),
+            relation: relation.clone(),
+            keys,
+            state_fingerprint,
+            negative_fingerprint,
+            output_fingerprint,
+            state_keys: state_keys.clone(),
+            state_values: state_values.clone(),
+            final_stage,
+        });
+        state_fingerprint = output_fingerprint;
+        state_keys.clone_from(&head_variables);
+        state_values.clear();
+    }
+    graph.facts_mut().insert(UnaryAntijoinPlan {
+        node: state_node,
+        head: head.clone(),
+        target_relation: request.catalog().relation(head.relation).clone(),
+        positive: positive.clone(),
+        positive_relation: positive_relation.clone(),
+        positive_keys,
+        positive_values,
+        positive_fingerprint,
+        stages,
+    });
+    Some(RulePlan::from_graph(graph, state_node))
+}
+
+type AntijoinInputAnalysis = (
+    Vec<(usize, usize)>,
+    Vec<(TransformationArgument, flowlog_fp::Constant)>,
+);
+
+fn analyze_negative_antijoin_input(
+    negative: &Atom,
+    relation: &Relation,
+    state_keys: &[String],
+    state_values: &[String],
+) -> Option<AntijoinInputAnalysis> {
+    let mut keys = Vec::new();
+    let mut constraints = Vec::new();
+    for (index, (argument, column_type)) in
+        negative.arguments.iter().zip(&relation.columns).enumerate()
+    {
+        if let Some(name) = variable_name(argument)
+            && let Some(position) = state_keys
+                .iter()
+                .chain(state_values)
+                .position(|candidate| candidate == &name)
+        {
+            keys.push((position, index));
+        } else if matches!(argument, Expr::Lit(_)) {
+            constraints.push((
+                TransformationArgument::KV((false, index)),
+                flowlog_constant(argument, column_type)?,
+            ));
+        } else if !matches!(argument, Expr::Infer(_)) {
+            return None;
+        }
+    }
+    keys.sort_by_key(|(position, _)| *position);
+    Some((keys, constraints))
+}
+
+fn antijoin_output_arguments(
+    head_variables: &[String],
+    state_keys: &[String],
+    state_values: &[String],
+) -> Option<Vec<TransformationArgument>> {
+    head_variables
+        .iter()
+        .map(|name| {
+            if let Some(index) = state_keys.iter().position(|item| item == name) {
+                Some(TransformationArgument::Jn((false, true, index)))
+            } else {
+                let index = state_values.iter().position(|item| item == name)?;
+                Some(TransformationArgument::Jn((false, false, index)))
+            }
+        })
+        .collect()
 }
 
 fn select_single_operator(

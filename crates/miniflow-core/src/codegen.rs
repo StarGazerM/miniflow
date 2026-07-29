@@ -9,14 +9,15 @@ use crate::compiler::{CompilerContext, Registry};
 use crate::flowlog_analysis::{
     binary_expression_variables, dereferenced_variable_name, expression_mentions_ident,
     expression_type, expression_variable_ident, expression_variables, flowlog_arithmetic,
-    flowlog_arithmetic_with, flowlog_comparison_operator, flowlog_constant, flowlog_data_type,
-    flowlog_variable, variable_name,
+    flowlog_arithmetic_with, flowlog_comparison_operator, flowlog_data_type, flowlog_variable,
+    variable_name,
 };
 use crate::flowlog_fp;
 use crate::flowlog_fp::TransformationArgument;
 use crate::flowlog_plan::{
     DIRECT_AGGREGATE, DirectAggregatePlan, SINGLE_FILTER, SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP,
-    SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE, SingleAtomPlan,
+    SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE, SingleAtomPlan, UNARY_ANTIJOIN, UnaryAntijoinPlan,
+    UnaryAntijoinStage,
 };
 use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId, Rule, Scc};
 use crate::pipeline::{PlanRule, PlanningCatalog, RuleRequest};
@@ -566,8 +567,9 @@ impl HirProgram {
             initialized.insert(target_relation);
             return Ok(vec![emitted]);
         }
-        if let Some((target_relation, emitted)) =
-            self.emit_flowlog_unary_antijoin(rule_index, initialized)
+        if let Some((target_relation, emitted)) = planned
+            .as_ref()
+            .and_then(Self::render_flowlog_unary_antijoin)
         {
             initialized.insert(target_relation);
             return Ok(vec![emitted]);
@@ -773,344 +775,30 @@ impl HirProgram {
         ))
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn emit_flowlog_unary_antijoin(
-        &self,
-        rule_index: usize,
-        initialized: &BTreeSet<RelationId>,
-    ) -> Option<(RelationId, TokenStream)> {
-        let rule = &self.rules[rule_index];
-        let [head] = rule.heads.as_slice() else {
-            return None;
-        };
-        let [BodyItem::Atom(positive), rest @ ..] = rule.body.as_slice() else {
-            return None;
-        };
-        let negatives = rest
-            .iter()
-            .map(|item| match item {
-                BodyItem::NegatedAtom(atom) => Some(atom),
-                _ => None,
-            })
-            .collect::<Option<Vec<_>>>()?;
-        if negatives.is_empty()
-            || initialized.contains(&head.relation)
-            || !initialized.contains(&positive.relation)
-            || negatives
-                .iter()
-                .any(|atom| !initialized.contains(&atom.relation))
-        {
+    fn render_flowlog_unary_antijoin(plan: &RulePlan) -> Option<(RelationId, TokenStream)> {
+        let root = plan.root();
+        if plan.graph().nodes().get(root.index())?.operator() != UNARY_ANTIJOIN {
             return None;
         }
-        let head_variables = head
-            .arguments
+        let physical = plan
+            .graph()
+            .facts()
+            .relation::<UnaryAntijoinPlan>()
             .iter()
-            .map(variable_name)
-            .collect::<Option<Vec<_>>>()?;
-        let positive_variables = positive
-            .arguments
-            .iter()
-            .map(|argument| {
-                matches!(argument, Expr::Infer(_))
-                    .then_some(None)
-                    .or_else(|| variable_name(argument).map(Some))
-            })
-            .collect::<Option<Vec<_>>>()?;
-        if head_variables
-            .iter()
-            .any(|name| !positive_variables.iter().flatten().any(|item| item == name))
-        {
-            return None;
-        }
-
-        let first_negative_variables = negatives[0]
-            .arguments
-            .iter()
-            .filter_map(variable_name)
-            .collect::<Vec<_>>();
-        let positive_keys = positive_variables
-            .iter()
-            .enumerate()
-            .filter_map(|(index, name)| {
-                name.as_ref()
-                    .filter(|name| first_negative_variables.contains(name))
-                    .map(|_| index)
-            })
-            .collect_vec();
-        let positive_values = positive_variables
-            .iter()
-            .enumerate()
-            .filter_map(|(index, name)| {
-                name.as_ref()
-                    .filter(|name| head_variables.contains(name) && !positive_keys.contains(&index))
-                    .map(|_| index)
-            })
-            .collect_vec();
-        let positive_relation = &self.relations[positive.relation.0];
-        let positive_plan = flowlog_fp::unary(
-            "row_to_kv",
-            flowlog_fp::relation(&flowlog_relation_fingerprint_name(positive_relation)),
-            positive_keys
-                .iter()
-                .map(|&index| TransformationArgument::KV((false, index))),
-            positive_values
-                .iter()
-                .map(|&index| TransformationArgument::KV((false, index))),
-        );
-        let positive_transform = format_ident!("t_{positive_plan}");
-        let positive_arrangement = format_ident!("t_{positive_plan}_arr");
-        let positive_collection = collection_ident(positive_relation);
-        let positive_rows = row_bindings_flowlog(positive_relation);
-        let selected = positive_keys
-            .iter()
-            .chain(&positive_values)
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let positive_pattern = tuple(positive_rows.iter().enumerate().map(|(index, row)| {
-            if selected.contains(&index) {
-                quote! { #row }
-            } else {
-                let ignored = format_ident!("_x{index}");
-                quote! { #ignored }
-            }
-        }));
-        let positive_type = tuple_type(positive_relation);
-        let positive_key = tuple(positive_keys.iter().map(|&index| {
-            let row = &positive_rows[index];
-            quote! { #row.clone() }
-        }));
-        let positive_value = tuple(positive_values.iter().map(|&index| {
-            let row = &positive_rows[index];
-            quote! { #row.clone() }
-        }));
-        let positive_emission = if positive_keys.len() == positive_relation.columns.len()
-            && positive_values.is_empty()
-        {
-            quote! {
-                let #positive_transform = #positive_collection.clone();
-                let #positive_arrangement =
-                    #positive_transform.clone().arrange_by_self();
-            }
-        } else if positive_values.is_empty() {
-            quote! {
-                let #positive_transform = #positive_collection
-                    .clone()
-                    .flat_map(|#positive_pattern: #positive_type| {
-                        std::iter::once(#positive_key)
-                    });
-                let #positive_arrangement =
-                    #positive_transform.clone().arrange_by_self();
-            }
-        } else {
-            quote! {
-                let #positive_transform = #positive_collection
-                    .clone()
-                    .flat_map(|#positive_pattern: #positive_type| {
-                        std::iter::once((#positive_key, #positive_value))
-                    });
-                let #positive_arrangement =
-                    #positive_transform.clone().arrange_by_key();
-            }
-        };
-
-        let mut state_plan = positive_plan;
-        let mut state_arrangement = positive_arrangement;
-        let mut state_keys = positive_keys
-            .iter()
-            .map(|&index| positive_variables[index].clone().expect("key variable"))
-            .collect_vec();
-        let mut state_values = positive_values
-            .iter()
-            .map(|&index| positive_variables[index].clone().expect("value variable"))
-            .collect_vec();
+            .find(|physical| physical.node() == root)?;
+        let positive_emission = render_antijoin_positive_input(physical);
+        let mut negative_preludes = Vec::with_capacity(physical.stages().len());
         let mut stages = TokenStream::new();
-        let mut negative_preludes = Vec::new();
-        for (stage, negative) in negatives.iter().enumerate() {
-            let relation = &self.relations[negative.relation.0];
-            let rows = row_bindings_flowlog(relation);
-            let mut keys = Vec::new();
-            let mut constraints = Vec::new();
-            let mut predicates = Vec::new();
-            let mut selected = BTreeSet::new();
-            for (index, (argument, column_type)) in
-                negative.arguments.iter().zip(&relation.columns).enumerate()
-            {
-                if let Some(name) = variable_name(argument)
-                    && let Some(position) = state_keys
-                        .iter()
-                        .chain(&state_values)
-                        .position(|candidate| candidate == &name)
-                {
-                    keys.push((position, index));
-                    selected.insert(index);
-                } else if matches!(argument, Expr::Lit(_)) {
-                    constraints.push((
-                        TransformationArgument::KV((false, index)),
-                        flowlog_constant(argument, column_type)?,
-                    ));
-                    let row = &rows[index];
-                    let value = emit_flowlog_literal(argument, column_type)?;
-                    predicates.push(quote! { #row == #value });
-                    selected.insert(index);
-                } else if !matches!(argument, Expr::Infer(_)) {
-                    return None;
-                }
-            }
-            keys.sort_by_key(|(position, _)| *position);
-            let negative_plan = flowlog_fp::unary_expressions(
-                "row_to_kv",
-                flowlog_fp::relation(&flowlog_relation_fingerprint_name(relation)),
-                keys.iter()
-                    .map(|(_, index)| flowlog_fp::ArithmeticArgument {
-                        init: flowlog_fp::FactorArgument::Var(TransformationArgument::KV((
-                            false, *index,
-                        ))),
-                        rest: Vec::new(),
-                    })
-                    .collect(),
-                Vec::new(),
-                constraints,
-                Vec::new(),
-                Vec::new(),
-            );
-            let negative_transform = format_ident!("t_{negative_plan}");
-            let negative_arrangement = format_ident!("t_{negative_plan}_arr");
-            let collection = collection_ident(relation);
-            let pattern = tuple(rows.iter().enumerate().map(|(index, row)| {
-                if selected.contains(&index) {
-                    quote! { #row }
-                } else {
-                    let ignored = format_ident!("_x{index}");
-                    quote! { #ignored }
-                }
-            }));
-            let row_type = tuple_type(relation);
-            let key = tuple(keys.iter().map(|(_, index)| {
-                let row = &rows[*index];
-                quote! { #row.clone() }
-            }));
-            let negative_emission = if keys.len() == relation.columns.len() && predicates.is_empty()
-            {
-                quote! {
-                    let #negative_transform = #collection.clone();
-                    let #negative_arrangement =
-                        #negative_transform.clone().arrange_by_self();
-                }
-            } else {
-                let output = if predicates.is_empty() {
-                    quote! { std::iter::once(#key) }
-                } else {
-                    quote! {
-                        if #(#predicates)&&* { Some(#key) } else { None }
-                    }
-                };
-                quote! {
-                    let #negative_transform = #collection
-                        .clone()
-                        .flat_map(|#pattern: #row_type| { #output });
-                    let #negative_arrangement =
-                        #negative_transform.clone().arrange_by_self();
-                }
-            };
-
-            let output_arguments = head_variables
-                .iter()
-                .map(|name| {
-                    if let Some(index) = state_keys.iter().position(|item| item == name) {
-                        Some(TransformationArgument::Jn((false, true, index)))
-                    } else {
-                        let index = state_values.iter().position(|item| item == name)?;
-                        Some(TransformationArgument::Jn((false, false, index)))
-                    }
-                })
-                .collect::<Option<Vec<_>>>()?;
-            let last_stage = stage + 1 == negatives.len();
-            let antijoin_plan = if last_stage {
-                flowlog_fp::join(
-                    "njn_to_row",
-                    negative_plan,
-                    state_plan,
-                    [],
-                    output_arguments.clone(),
-                )
-            } else {
-                flowlog_fp::join("njn_to_kv", negative_plan, state_plan, output_arguments, [])
-            };
-            let antijoin_transform = format_ident!("t_{antijoin_plan}");
-            let key_binding = if state_keys.is_empty() {
-                format_ident!("_k")
-            } else {
-                format_ident!("k")
-            };
-            let value_binding = if state_values.is_empty() {
-                format_ident!("_v")
-            } else {
-                format_ident!("v")
-            };
-            let output = tuple(head_variables.iter().map(|name| {
-                if let Some(index) = state_keys.iter().position(|item| item == name) {
-                    let index = syn::Index::from(index);
-                    quote! { #key_binding.#index.clone() }
-                } else {
-                    let index = state_values
-                        .iter()
-                        .position(|item| item == name)
-                        .expect("validated antijoin output");
-                    let index = syn::Index::from(index);
-                    quote! { #value_binding.#index.clone() }
-                }
-            }));
-            let state_arrangement_emission = (stage > 0).then(|| {
-                let state_transform = format_ident!("t_{state_plan}");
-                quote! {
-                    let #state_arrangement =
-                        #state_transform.clone().arrange_by_self();
-                }
-            });
-            negative_preludes.push(negative_emission);
-            stages.extend(quote! {
-                #state_arrangement_emission
-                let #antijoin_transform = #state_arrangement
-                    .clone()
-                    .flat_map_ref(|#key_binding, #value_binding|
-                        std::iter::once((#key_binding.clone(), #value_binding.clone()))
-                    )
-                    .inner
-                    .flat_map(move |(x, t, _)| std::iter::once((x, t.clone(), 1i32)))
-                    .as_collection()
-                    .concat({
-                        #negative_arrangement
-                            .clone()
-                            .join_core(
-                                #state_arrangement.clone(),
-                                |aj_k, _, aj_rv| {
-                                    Some((aj_k.clone(), aj_rv.clone()))
-                                },
-                            )
-                            .inner
-                            .flat_map(move |(x, t, _)|
-                                std::iter::once((x, t.clone(), -1i32))
-                            )
-                            .as_collection()
-                    })
-                    .flat_map(|(#key_binding, #value_binding)|
-                        std::iter::once(#output)
-                    )
-                    .threshold_semigroup(move |_, _, old| {
-                        old.is_none().then_some(SEMIRING_ONE)
-                    });
-            });
-            state_plan = antijoin_plan;
-            state_arrangement = format_ident!("t_{antijoin_plan}_arr");
-            state_keys.clone_from(&head_variables);
-            state_values.clear();
+        for (index, stage) in physical.stages().iter().enumerate() {
+            negative_preludes.push(render_antijoin_negative_input(stage)?);
+            stages.extend(render_antijoin_stage(physical.head(), stage, index > 0));
         }
         negative_preludes.reverse();
         let prelude = quote! { #(#negative_preludes)* #positive_emission };
-        let target_collection = collection_ident(&self.relations[head.relation.0]);
-        let final_transform = format_ident!("t_{state_plan}");
+        let target_collection = collection_ident(physical.target_relation());
+        let final_transform = format_ident!("t_{}", physical.stages().last()?.output_fingerprint());
         Some((
-            head.relation,
+            physical.head().relation,
             quote! {
                 #prelude
                 #stages
@@ -4223,6 +3911,193 @@ fn render_direct_aggregate_reduction(
         })
         .as_collection()
     })
+}
+
+fn render_antijoin_positive_input(physical: &UnaryAntijoinPlan) -> TokenStream {
+    let relation = physical.positive_relation();
+    let keys = physical.positive_keys();
+    let values = physical.positive_values();
+    let transform = format_ident!("t_{}", physical.positive_fingerprint());
+    let arrangement = format_ident!("t_{}_arr", physical.positive_fingerprint());
+    let collection = collection_ident(relation);
+    let rows = row_bindings_flowlog(relation);
+    let selected = keys.iter().chain(values).copied().collect::<BTreeSet<_>>();
+    let pattern = tuple(rows.iter().enumerate().map(|(index, row)| {
+        if selected.contains(&index) {
+            quote! { #row }
+        } else {
+            let ignored = format_ident!("_x{index}");
+            quote! { #ignored }
+        }
+    }));
+    let row_type = tuple_type(relation);
+    let key = tuple(keys.iter().map(|&index| {
+        let row = &rows[index];
+        quote! { #row.clone() }
+    }));
+    let value = tuple(values.iter().map(|&index| {
+        let row = &rows[index];
+        quote! { #row.clone() }
+    }));
+    if keys.len() == relation.columns.len() && values.is_empty() {
+        quote! {
+            let #transform = #collection.clone();
+            let #arrangement = #transform.clone().arrange_by_self();
+        }
+    } else if values.is_empty() {
+        quote! {
+            let #transform = #collection
+                .clone()
+                .flat_map(|#pattern: #row_type| {
+                    std::iter::once(#key)
+                });
+            let #arrangement = #transform.clone().arrange_by_self();
+        }
+    } else {
+        quote! {
+            let #transform = #collection
+                .clone()
+                .flat_map(|#pattern: #row_type| {
+                    std::iter::once((#key, #value))
+                });
+            let #arrangement = #transform.clone().arrange_by_key();
+        }
+    }
+}
+
+fn render_antijoin_negative_input(stage: &UnaryAntijoinStage) -> Option<TokenStream> {
+    let relation = stage.relation();
+    let rows = row_bindings_flowlog(relation);
+    let key_columns = stage
+        .keys()
+        .iter()
+        .map(|(_, column)| *column)
+        .collect::<BTreeSet<_>>();
+    let mut selected = key_columns;
+    let mut predicates = Vec::new();
+    for (index, (argument, column_type)) in stage
+        .negative()
+        .arguments
+        .iter()
+        .zip(&relation.columns)
+        .enumerate()
+    {
+        if matches!(argument, Expr::Lit(_)) {
+            selected.insert(index);
+            let row = &rows[index];
+            let value = emit_flowlog_literal(argument, column_type)?;
+            predicates.push(quote! { #row == #value });
+        }
+    }
+    let transform = format_ident!("t_{}", stage.negative_fingerprint());
+    let arrangement = format_ident!("t_{}_arr", stage.negative_fingerprint());
+    let collection = collection_ident(relation);
+    let pattern = tuple(rows.iter().enumerate().map(|(index, row)| {
+        if selected.contains(&index) {
+            quote! { #row }
+        } else {
+            let ignored = format_ident!("_x{index}");
+            quote! { #ignored }
+        }
+    }));
+    let row_type = tuple_type(relation);
+    let key = tuple(stage.keys().iter().map(|(_, index)| {
+        let row = &rows[*index];
+        quote! { #row.clone() }
+    }));
+    if stage.keys().len() == relation.columns.len() && predicates.is_empty() {
+        Some(quote! {
+            let #transform = #collection.clone();
+            let #arrangement = #transform.clone().arrange_by_self();
+        })
+    } else {
+        let output = if predicates.is_empty() {
+            quote! { std::iter::once(#key) }
+        } else {
+            quote! {
+                if #(#predicates)&&* { Some(#key) } else { None }
+            }
+        };
+        Some(quote! {
+            let #transform = #collection
+                .clone()
+                .flat_map(|#pattern: #row_type| { #output });
+            let #arrangement = #transform.clone().arrange_by_self();
+        })
+    }
+}
+
+fn render_antijoin_stage(
+    head: &Atom,
+    stage: &UnaryAntijoinStage,
+    arrange_state: bool,
+) -> TokenStream {
+    let state_transform = format_ident!("t_{}", stage.state_fingerprint());
+    let state_arrangement = format_ident!("t_{}_arr", stage.state_fingerprint());
+    let negative_arrangement = format_ident!("t_{}_arr", stage.negative_fingerprint());
+    let output_transform = format_ident!("t_{}", stage.output_fingerprint());
+    let key_binding = if stage.state_keys().is_empty() {
+        format_ident!("_k")
+    } else {
+        format_ident!("k")
+    };
+    let value_binding = if stage.state_values().is_empty() {
+        format_ident!("_v")
+    } else {
+        format_ident!("v")
+    };
+    let output = tuple(head.arguments.iter().map(|argument| {
+        let name = variable_name(argument).expect("antijoin head variables validated in planning");
+        if let Some(index) = stage.state_keys().iter().position(|item| item == &name) {
+            let index = syn::Index::from(index);
+            quote! { #key_binding.#index.clone() }
+        } else {
+            let index = stage
+                .state_values()
+                .iter()
+                .position(|item| item == &name)
+                .expect("antijoin output validated in planning");
+            let index = syn::Index::from(index);
+            quote! { #value_binding.#index.clone() }
+        }
+    }));
+    let state_arrangement_emission = arrange_state.then(|| {
+        quote! {
+            let #state_arrangement = #state_transform.clone().arrange_by_self();
+        }
+    });
+    quote! {
+        #state_arrangement_emission
+        let #output_transform = #state_arrangement
+            .clone()
+            .flat_map_ref(|#key_binding, #value_binding|
+                std::iter::once((#key_binding.clone(), #value_binding.clone()))
+            )
+            .inner
+            .flat_map(move |(x, t, _)| std::iter::once((x, t.clone(), 1i32)))
+            .as_collection()
+            .concat({
+                #negative_arrangement
+                    .clone()
+                    .join_core(
+                        #state_arrangement.clone(),
+                        |aj_k, _, aj_rv| {
+                            Some((aj_k.clone(), aj_rv.clone()))
+                        },
+                    )
+                    .inner
+                    .flat_map(move |(x, t, _)|
+                        std::iter::once((x, t.clone(), -1i32))
+                    )
+                    .as_collection()
+            })
+            .flat_map(|(#key_binding, #value_binding)|
+                std::iter::once(#output)
+            )
+            .threshold_semigroup(move |_, _, old| {
+                old.is_none().then_some(SEMIRING_ONE)
+            });
+    }
 }
 
 struct RenderedEnvironment {
