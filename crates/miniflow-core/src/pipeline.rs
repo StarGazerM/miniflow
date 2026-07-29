@@ -10,7 +10,7 @@ use crate::compiler::{CompilerContext, Layer, Operation, Registry};
 use crate::flowlog_plan;
 use crate::hir::{Atom, HirProgram, Relation, RelationId, Rule, Scc};
 use crate::rule_plan::RulePlan;
-use crate::scc_plan::SccPlan;
+use crate::scc_plan::{SccPlan, SccRulePlan};
 use crate::{lower, parse};
 
 /// Immutable resolved-program context shared by rule-planning requests.
@@ -122,11 +122,11 @@ impl Operation for PlanRule {
 }
 
 /// Input to recursive SCC planning.
-#[derive(Clone)]
 pub struct SccRequest {
     catalog: PlanningCatalog,
     scc: Scc,
     initialized: BTreeSet<RelationId>,
+    rule_plans: Vec<SccRulePlan>,
 }
 
 impl SccRequest {
@@ -134,11 +134,13 @@ impl SccRequest {
         catalog: PlanningCatalog,
         scc: Scc,
         initialized: BTreeSet<RelationId>,
+        rule_plans: Vec<SccRulePlan>,
     ) -> Self {
         Self {
             catalog,
             scc,
             initialized,
+            rule_plans,
         }
     }
 
@@ -158,6 +160,29 @@ impl SccRequest {
     #[must_use]
     pub const fn initialized(&self) -> &BTreeSet<RelationId> {
         &self.initialized
+    }
+
+    /// Return completed rule-head plans in source rule/head order.
+    #[must_use]
+    pub fn rule_plans(&self) -> &[SccRulePlan] {
+        &self.rule_plans
+    }
+
+    fn into_default_plan(self) -> SccPlan {
+        let relation_ids = self
+            .rule_plans
+            .iter()
+            .map(SccRulePlan::target)
+            .collect::<BTreeSet<_>>();
+        let relations = relation_ids
+            .iter()
+            .map(|&id| self.catalog.relation(id).clone())
+            .collect();
+        let missing_bases = relation_ids
+            .into_iter()
+            .filter(|id| !self.initialized.contains(id))
+            .collect();
+        SccPlan::build(relations, missing_bases, self.rule_plans)
     }
 }
 
@@ -188,7 +213,7 @@ impl Compiler {
         flowlog_plan::install(&mut registry);
         registry
             .define::<PlanRule, _>(|_, request| RulePlan::build(request.rule(), request.head()))?;
-        registry.define::<PlanScc, _>(|_, request| Ok(SccPlan::build(request.scc())))?;
+        registry.define::<PlanScc, _>(|_, request| Ok(request.into_default_plan()))?;
         Ok(Self {
             registry,
             context: CompilerContext::default(),

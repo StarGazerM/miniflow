@@ -131,3 +131,49 @@ fn an_external_layer_can_intercept_recursive_region_planning() {
         ]
     );
 }
+
+#[test]
+fn recursive_region_planning_receives_completed_rule_plans() {
+    let recursive_rule_calls = Rc::new(Cell::new(0));
+    let observed_calls = Rc::clone(&recursive_rule_calls);
+    let observed_plans = Rc::new(RefCell::new(Vec::new()));
+    let captured_plans = Rc::clone(&observed_plans);
+    let mut compiler = Compiler::new().unwrap();
+    compiler
+        .registry_mut()
+        .around::<PlanRule, _>(move |context, request, next| {
+            if request.recursive() {
+                observed_calls.set(observed_calls.get() + 1);
+            }
+            next.call(context, request)
+        });
+    compiler
+        .registry_mut()
+        .around::<PlanScc, _>(move |context, request, next| {
+            *captured_plans.borrow_mut() = request
+                .rule_plans()
+                .iter()
+                .map(|planned| {
+                    (
+                        planned.rule_index(),
+                        planned.head_index(),
+                        planned.plan().graph().nodes().len(),
+                    )
+                })
+                .collect();
+            next.call(context, request)
+        });
+
+    compiler
+        .compile(quote! {
+            struct Program;
+            relation edge(i32, i32);
+            relation path(i32, i32);
+            path(1, 2);
+            path(x, z) <-- path(x, y), edge(y, z), if x != z;
+        })
+        .unwrap();
+
+    assert_eq!(recursive_rule_calls.get(), 1);
+    assert_eq!(*observed_plans.borrow(), [(1, 0, 4)]);
+}

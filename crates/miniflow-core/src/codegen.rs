@@ -26,7 +26,7 @@ use crate::rule_plan::{
     AGGREGATE, ANTIJOIN, Binding, BindingMap, CONDITION, FACT, GENERATOR, IF_LET, JOIN, LET,
     PROJECT, RulePlan, RuleStep, SOURCE,
 };
-use crate::scc_plan::SccPlan;
+use crate::scc_plan::{GENERIC_RECURSIVE_SCC, GenericRecursiveScc, SccPlan, SccRulePlan};
 
 struct NamedTransformation {
     ident: Ident,
@@ -1191,9 +1191,36 @@ impl HirProgram {
         registry: &Registry,
         context: &mut CompilerContext,
     ) -> Result<TokenStream> {
+        let mut rule_plans = Vec::new();
+        for &rule_index in &scc.rules {
+            let rule = &self.rules[rule_index];
+            for (head_index, head) in rule.heads.iter().enumerate() {
+                let plan = registry.perform::<PlanRule>(
+                    context,
+                    RuleRequest::new(
+                        catalog.clone(),
+                        rule_index,
+                        head_index,
+                        initialized.clone(),
+                        true,
+                    ),
+                )?;
+                rule_plans.push(SccRulePlan::new(
+                    rule_index,
+                    head_index,
+                    head.relation,
+                    plan,
+                ));
+            }
+        }
         let planned = registry.perform::<PlanScc>(
             context,
-            SccRequest::new(catalog.clone(), scc.clone(), initialized.clone()),
+            SccRequest::new(
+                catalog.clone(),
+                scc.clone(),
+                initialized.clone(),
+                rule_plans,
+            ),
         )?;
         if let Some((target, emitted)) = Self::render_flowlog_symmetric_closure(&planned) {
             initialized.insert(target);
@@ -1212,28 +1239,52 @@ impl HirProgram {
             return Ok(emitted);
         }
 
-        let head_relations = scc
-            .rules
+        let root = planned.root();
+        if !matches!(
+            planned.graph().nodes().get(root.index()),
+            Some(node) if node.operator() == GENERIC_RECURSIVE_SCC
+        ) {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "recursive SCC plan has no installed renderer",
+            ));
+        }
+        let physical = planned
+            .graph()
+            .facts()
+            .relation::<GenericRecursiveScc>()
             .iter()
-            .flat_map(|&index| self.rules[index].heads.iter().map(|head| head.relation))
-            .collect::<BTreeSet<_>>();
-        let recursive_relations = head_relations.iter().copied().collect_vec();
+            .find(|physical| physical.node == root)
+            .ok_or_else(|| {
+                syn::Error::new(
+                    Span::call_site(),
+                    "generic recursive SCC node is missing its physical facts",
+                )
+            })?;
+        let recursive_relations = physical
+            .relations()
+            .iter()
+            .map(|relation| relation.id)
+            .collect_vec();
         if recursive_relations.is_empty() {
             return Err(syn::Error::new(
                 Span::call_site(),
                 "recursive SCC has no derived relation",
             ));
         }
-        let missing_bases = recursive_relations
-            .iter()
-            .filter(|relation| !initialized.contains(relation))
-            .copied()
-            .collect_vec();
-        initialized.extend(missing_bases.iter().copied());
-        let empty_bases = missing_bases
+        initialized.extend(recursive_relations.iter().copied());
+        let relation_info = |id: RelationId| {
+            physical
+                .relations()
+                .iter()
+                .find(|relation| relation.id == id)
+                .expect("generic SCC facts resolve every recursive relation")
+        };
+        let empty_bases = physical
+            .missing_bases()
             .iter()
             .map(|&relation| {
-                let relation = &self.relations[relation.0];
+                let relation = relation_info(relation);
                 let target = collection_ident(relation);
                 let tuple_type = tuple_type(relation);
                 quote! {
@@ -1242,14 +1293,12 @@ impl HirProgram {
             })
             .collect_vec();
 
-        let enter_stmts = recursive_relations.iter().map(|&relation| {
-            let relation = &self.relations[relation.0];
+        let enter_stmts = physical.relations().iter().map(|relation| {
             let target = collection_ident(relation);
             let base = inner_base_ident(relation);
             quote! { let #base = #target.clone().enter(inner); }
         });
-        let variable_inits = recursive_relations.iter().map(|&relation| {
-            let relation = &self.relations[relation.0];
+        let variable_inits = physical.relations().iter().map(|relation| {
             let variable = variable_ident(relation);
             let inner = inner_collection_ident(relation);
             quote! {
@@ -1261,27 +1310,16 @@ impl HirProgram {
         });
 
         let mut derivations = BTreeMap::<RelationId, Vec<TokenStream>>::new();
-        for &rule_index in &scc.rules {
-            let rule = &self.rules[rule_index];
-            for (head_index, head) in rule.heads.iter().enumerate() {
-                derivations
-                    .entry(head.relation)
-                    .or_default()
-                    .push(self.emit_rule_expression(
-                        RuleRequest::new(
-                            catalog.clone(),
-                            rule_index,
-                            head_index,
-                            initialized.clone(),
-                            true,
-                        ),
-                        ScopeMode::Inner {
-                            recursive: &recursive_relations,
-                        },
-                        registry,
-                        context,
-                    )?);
-            }
+        for derivation in physical.derivations() {
+            derivations
+                .entry(derivation.target())
+                .or_default()
+                .push(self.render_rule_plan(
+                    derivation.plan(),
+                    ScopeMode::Inner {
+                        recursive: &recursive_relations,
+                    },
+                )?);
         }
 
         let mut next_stmts = Vec::with_capacity(recursive_relations.len());
@@ -1297,7 +1335,7 @@ impl HirProgram {
             let (first, rest) = relation_derivations
                 .split_first()
                 .expect("checked non-empty derivations");
-            let relation_info = &self.relations[relation.0];
+            let relation_info = relation_info(relation);
             let base = inner_base_ident(relation_info);
             let next = next_ident(relation_info);
             let variable = variable_ident(relation_info);
@@ -1316,7 +1354,7 @@ impl HirProgram {
 
         let targets = recursive_relations
             .iter()
-            .map(|&relation| collection_ident(&self.relations[relation.0]))
+            .map(|&relation| collection_ident(relation_info(relation)))
             .collect_vec();
         let target_pattern = if targets.len() == 1 {
             let target = &targets[0];
