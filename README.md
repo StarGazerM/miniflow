@@ -126,7 +126,7 @@ benchmark corpora.
 <!-- BEGIN TOKEI COMPARISON -->
 | Production Rust | Files | Lines | Code | Comments | Blanks |
 |---|---:|---:|---:|---:|---:|
-| MiniFlow + AscentFlow | 16 | 6951 | 6493 | 105 | 353 |
+| MiniFlow + AscentFlow | 16 | 6905 | 6446 | 105 | 354 |
 | FlowLog batch stack | 151 | 39910 | 29303 | 6402 | 4205 |
 <!-- END TOKEI COMPARISON -->
 
