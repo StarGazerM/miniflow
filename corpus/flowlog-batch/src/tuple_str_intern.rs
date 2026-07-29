@@ -1,11 +1,11 @@
 crate::fixture_program! {
     pub struct TupleStrIntern;
-    .decl input(c0: String, c1: String)
-    .decl out(c0: String)
+    relation input(String, String);
+    relation out(String);
 
-    input("p".to_owned(), "q".to_owned()).
-    input("a".to_owned(), "b".to_owned()).
-    out(format!("({}, {})", x, y)) :- input(x, y).
+    input("p".to_owned(), "q".to_owned());
+    input("a".to_owned(), "b".to_owned());
+    out(format!("({}, {})", x, y)) <-- input(x, y);
 }
 
 pub fn run(

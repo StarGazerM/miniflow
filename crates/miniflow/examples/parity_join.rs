@@ -5,11 +5,11 @@ use miniflow::miniflow;
 
 miniflow! {
     struct Join;
-    .decl left(x: int32, y: int32)
-    .decl right(y: int32, z: int32)
-    .decl output(x: int32, z: int32)
+    relation left(i32, i32);
+    relation right(i32, i32);
+    relation output(i32, i32);
 
-    output(x, z) :- left(x, y), right(y, z).
+    output(x, z) <-- left(x, y), right(y, z);
 }
 
 fn read_binary(path: &str) -> Result<Vec<(i32, i32)>, Box<dyn Error>> {

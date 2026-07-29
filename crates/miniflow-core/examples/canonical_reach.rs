@@ -1,14 +1,14 @@
-use miniflow_syntax::compile_canonical;
+use miniflow_core::compile_canonical;
 use quote::quote;
 
 fn main() {
     let expansion = compile_canonical(quote! {
         struct Reach;
-        .decl source(x: int32)
-        .decl arc(x: int32, y: int32)
-        .decl reach(x: int32)
-        reach(x) :- source(x).
-        reach(y) :- reach(x), arc(x, y).
+        relation source(i32);
+        relation arc(i32, i32);
+        relation reach(i32);
+        reach(x) <-- source(x);
+        reach(y) <-- reach(x), arc(x, y);
     })
     .expect("canonical reach expansion must compile");
     print!("{expansion}");

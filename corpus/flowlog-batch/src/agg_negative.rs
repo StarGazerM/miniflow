@@ -1,15 +1,18 @@
 crate::fixture_program! {
     pub struct AggNegative;
-    .decl data(c0: i32, c1: i32)
-    .decl derived(c0: i32, c1: i32)
-    .decl min_val(c0: i32, c1: i32)
-    .decl max_val(c0: i32, c1: i32)
-    .decl sum_val(c0: i32, c1: i32)
+    relation data(i32, i32);
+    relation derived(i32, i32);
+    relation min_val(i32, i32);
+    relation max_val(i32, i32);
+    relation sum_val(i32, i32);
 
-    derived(group_id, value) :- data(group_id, value).
-    min_val(group_id, min(value)) :- derived(group_id, value).
-    max_val(group_id, max(value)) :- derived(group_id, value).
-    sum_val(group_id, sum(value)) :- derived(group_id, value).
+    derived(group_id, value) <-- data(group_id, value);
+    min_val(group_id, minimum) <--
+        agg minimum = min(value) in derived(group_id, value);
+    max_val(group_id, maximum) <--
+        agg maximum = max(value) in derived(group_id, value);
+    sum_val(group_id, total) <--
+        agg total = sum(value) in derived(group_id, value);
 }
 
 crate::fixture_io! {

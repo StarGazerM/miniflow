@@ -1,8 +1,4 @@
-#![allow(
-    clippy::comparison_to_empty,
-    clippy::unreadable_literal,
-    clippy::wildcard_imports
-)]
+#![allow(clippy::unreadable_literal, clippy::wildcard_imports)]
 
 use std::path::PathBuf;
 
@@ -10,45 +6,44 @@ use harness::*;
 
 miniflow::miniflow! {
     #![flowlog_batch]
+    #![output(q2)]
 
     struct InteractiveComplex2;
 
-    .decl person(id: int64, first_name: String, last_name: String, gender: String, birthday: String, creation_date: String, location_ip: String, browser: String)
-    .decl knows(source: int64, target: int64, creation_date: String)
-    .decl comment(id: int64, creation_date: String, location_ip: String, browser: String, content: String, length: int64)
-    .decl comment_has_creator(comment: int64, person: int64)
-    .decl post(id: int64, image_file: String, creation_date: String, location_ip: String, browser: String, language: String, content: String, length: int64)
-    .decl post_has_creator(post: int64, person: int64)
-    .decl param(person: int64, max_date: String)
-    .decl q2(person: int64, first_name: String, last_name: String, message: int64, content: String, creation_date: String)
+    relation person(i64, String, String, String, String, String, String, String);
+    relation knows(i64, i64, String);
+    relation comment(i64, String, String, String, String, i64);
+    relation comment_has_creator(i64, i64);
+    relation post(i64, String, String, String, String, String, String, i64);
+    relation post_has_creator(i64, i64);
+    relation param(i64, String);
+    relation q2(i64, String, String, i64, String, String);
 
-    q2(person_id, first_name, last_name, message_id, content, creation_date) :-
+    q2(person_id, first_name, last_name, message_id, content, creation_date) <--
         param(source_id, max_date),
         knows(source_id, person_id, _),
         comment_has_creator(message_id, person_id),
         comment(message_id, creation_date, _, _, content, _),
         person(person_id, first_name, last_name, _, _, _, _, _),
-        creation_date < max_date.
+        if creation_date < max_date;
 
-    q2(person_id, first_name, last_name, message_id, image_file, creation_date) :-
+    q2(person_id, first_name, last_name, message_id, image_file, creation_date) <--
         param(source_id, max_date),
         knows(source_id, person_id, _),
         post_has_creator(message_id, person_id),
         post(message_id, image_file, creation_date, _, _, _, _, _),
         person(person_id, first_name, last_name, _, _, _, _, _),
-        image_file != "",
-        creation_date < max_date.
+        if !image_file.is_empty(),
+        if creation_date < max_date;
 
-    q2(person_id, first_name, last_name, message_id, content, creation_date) :-
+    q2(person_id, first_name, last_name, message_id, content, creation_date) <--
         param(source_id, max_date),
         knows(source_id, person_id, _),
         post_has_creator(message_id, person_id),
         post(message_id, image_file, creation_date, _, _, _, content, _),
         person(person_id, first_name, last_name, _, _, _, _, _),
-        image_file = "",
-        creation_date < max_date.
-
-    .output q2
+        if image_file.is_empty(),
+        if creation_date < max_date;
 }
 
 fn main() {

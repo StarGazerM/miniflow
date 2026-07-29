@@ -5,11 +5,11 @@ use miniflow::miniflow;
 
 miniflow! {
     struct Negation;
-    .decl input(x: int32)
-    .decl blocked(x: int32)
-    .decl output(x: int32)
+    relation input(i32);
+    relation blocked(i32);
+    relation output(i32);
 
-    output(x) :- input(x), !blocked(x).
+    output(x) <-- input(x), !blocked(x);
 }
 
 fn read_unary(path: &str) -> Result<Vec<(i32,)>, Box<dyn Error>> {

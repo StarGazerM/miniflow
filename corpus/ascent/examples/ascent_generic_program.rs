@@ -26,12 +26,12 @@ miniflow! {
             + for<'de> Deserialize<'de>
             + 'static;
 
-    .decl node(value: N)
-    .decl edge(source: N, target: N)
-    .decl reachable(source: N, target: N)
+    relation node(N);
+    relation edge(N, N);
+    relation reachable(N, N);
 
-    reachable(x, y) :- edge(x, y).
-    reachable(x, z) :- reachable(x, y), edge(y, z).
+    reachable(x, y) <-- edge(x, y);
+    reachable(x, z) <-- reachable(x, y), edge(y, z);
 }
 
 pub fn check() {

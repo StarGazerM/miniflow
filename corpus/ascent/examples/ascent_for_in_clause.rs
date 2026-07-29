@@ -2,14 +2,10 @@ use miniflow::miniflow;
 
 miniflow! {
     pub struct ForInClause;
-    .decl seed(value: int32)
-    .decl offset(value: int32)
-    .decl number(value: int32)
+    relation seed(i32);
+    relation number(i32);
 
-    offset(0).
-    offset(1).
-    offset(2).
-    number(x + y) :- seed(x), offset(y).
+    number(x + y) <-- seed(x), for y in 0..3;
 }
 
 pub fn check() {

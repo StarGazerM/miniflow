@@ -16,10 +16,10 @@ mod udf {
 
 crate::fixture_program! {
     pub struct UdfHead;
-    .decl edge(c0: i32, c1: i32)
-    .decl hashed(c0: i32, c1: i32)
+    relation edge(i32, i32);
+    relation hashed(i32, i32);
 
-    hashed(source, udf::transform(*source, *destination)) :- edge(source, destination).
+    hashed(source, udf::transform(*source, *destination)) <-- edge(source, destination);
 }
 
 crate::fixture_io! {

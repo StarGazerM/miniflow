@@ -21,12 +21,13 @@ impl List {
 
 miniflow! {
     pub struct LetClause;
-    .decl list(value: List, length: usize)
+    relation list(List, usize);
 
-    list(List::Nil, 0).
-    list(List::Cons(*length, Box::new(tail.clone())), *length + 1) :-
+    list(List::Nil, 0);
+    list(List::Cons(*length, Box::new(tail.clone())), height) <--
         list(tail, length),
-        *length < 5 .
+        let height = *length + 1,
+        if *height <= 5;
 }
 
 pub fn check() {

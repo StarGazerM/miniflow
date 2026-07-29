@@ -412,3 +412,7 @@ fn derive_sccs(rules: &[Rule]) -> Result<Vec<Scc>> {
 
     Ok(scheduled)
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/hir.rs"]
+mod tests;

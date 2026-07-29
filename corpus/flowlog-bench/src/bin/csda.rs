@@ -1,31 +1,20 @@
 #![allow(clippy::unreadable_literal, clippy::wildcard_imports)]
 
-// MiniFlow FlowLog-syntax translation of programs/oracle/souffle/csda.dl (join order preserved)
-use harness::*;
-use miniflow::miniflow;
+mod ascent {
+    macro_rules! ascent_par {
+        ($($program:tt)*) => {
+            miniflow::miniflow! {
+                #![flowlog_batch]
+                #![output(nullnode)]
+                $($program)*
+            }
+        };
+    }
 
-miniflow! {
-    #![flowlog_batch]
-
-    struct Csda;
-
-    .decl nulledge(c0: i32, c1: i32)
-    .decl edge(c0: i32, c1: i32)
-    .decl nullnode(c0: i32, c1: i32)
-
-    nullnode(x, y) :- nulledge(x, y).
-    nullnode(x, y) :- nullnode(x, w), edge(w, y).
-
-    .output nullnode
+    pub(crate) use ascent_par;
 }
 
-fn main() {
-    let dir = bench_init();
-    let mut prog = Csda::default();
-    timed_load(|| {
-        prog.nulledge = load_rel(&dir, "NullEdge.csv", ',');
-        prog.edge = load_rel(&dir, "Edge.csv", ',');
-    });
-    timed_run(|| prog.run());
-    printsize("NullNode", prog.nullnode.len());
-}
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../flowlog-bench/programs/oracle/ascent/csda/src/main.rs"
+));

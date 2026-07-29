@@ -6,12 +6,12 @@ use miniflow::miniflow;
 miniflow! {
     #![profile]
     struct ReachProfile;
-    .decl source(x: int32)
-    .decl arc(x: int32, y: int32)
-    .decl reach(x: int32)
+    relation source(i32);
+    relation arc(i32, i32);
+    relation reach(i32);
 
-    reach(x) :- source(x).
-    reach(y) :- reach(x), arc(x, y).
+    reach(x) <-- source(x);
+    reach(y) <-- reach(x), arc(x, y);
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

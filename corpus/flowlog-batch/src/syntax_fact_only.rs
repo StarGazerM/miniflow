@@ -4,12 +4,12 @@ use std::path::Path;
 
 crate::fixture_program! {
     pub struct SyntaxFactOnly;
-    .decl param(c0: i32)
-    .decl out(c0: i32)
+    relation param(i32);
+    relation out(i32);
 
-    param(1).
-    param(2).
-    out(x) :- param(x).
+    param(1);
+    param(2);
+    out(x) <-- param(x);
 }
 
 #[cfg(test)]

@@ -5,10 +5,10 @@ use miniflow::miniflow;
 
 miniflow! {
     struct Projection;
-    .decl input(x: int32, y: int32)
-    .decl output(x: int32)
+    relation input(i32, i32);
+    relation output(i32);
 
-    output(x) :- input(x, _).
+    output(x) <-- input(x, _);
 }
 
 fn read_binary(path: &str) -> Result<Vec<(i32, i32)>, Box<dyn Error>> {

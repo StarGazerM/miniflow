@@ -1,11 +1,11 @@
 crate::fixture_program! {
     pub struct MatchBuiltin;
-    .decl name(c0: String)
-    .decl java_name(c0: String)
-    .decl non_java_name(c0: String)
+    relation name(String);
+    relation java_name(String);
+    relation non_java_name(String);
 
-    java_name(value) :- name(value), value.starts_with("java") = true.
-    non_java_name(value) :- name(value), value.starts_with("java") = false.
+    java_name(value) <-- name(value), if value.starts_with("java");
+    non_java_name(value) <-- name(value), if !value.starts_with("java");
 }
 
 pub fn run(

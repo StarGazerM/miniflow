@@ -3,10 +3,10 @@ use std::path::Path;
 
 crate::fixture_program! {
     pub struct OutputOrderBy;
-    .decl data(c0: String, c1: i32)
-    .decl out(c0: String, c1: i32)
+    relation data(String, i32);
+    relation out(String, i32);
 
-    out(name, score) :- data(name, score).
+    out(name, score) <-- data(name, score);
 }
 
 pub fn run(fixture_dir: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {

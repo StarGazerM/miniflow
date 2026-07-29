@@ -2,48 +2,48 @@ use miniflow::miniflow;
 
 miniflow! {
     pub struct Reach;
-    .decl source(x: int32)
-    .decl arc(x: int32, y: int32)
-    .decl reach(x: int32)
-    reach(x) :- source(x).
-    reach(y) :- reach(x), arc(x, y).
+    relation source(i32);
+    relation arc(i32, i32);
+    relation reach(i32);
+    reach(x) <-- source(x);
+    reach(y) <-- reach(x), arc(x, y);
 }
 
 miniflow! {
     pub struct Fibonacci;
-    .decl number(x: isize)
-    .decl fib(x: isize, value: isize)
+    relation number(isize);
+    relation fib(isize, isize);
 
-    number(0).
-    number(1).
-    number(2).
-    number(3).
-    number(4).
-    number(5).
+    number(0);
+    number(1);
+    number(2);
+    number(3);
+    number(4);
+    number(5);
 
-    fib(0, 1) :- number(0).
-    fib(1, 1) :- number(1).
-    fib(x, y + z) :-
+    fib(0, 1) <-- number(0);
+    fib(1, 1) <-- number(1);
+    fib(x, y + z) <--
         number(x),
-        *x >= 2,
+        if *x >= 2,
         fib(x - 1, y),
-        fib(x - 2, z).
+        fib(x - 2, z);
 }
 
 miniflow! {
     pub struct Mutual;
-    .decl step(x: int32, y: int32)
-    .decl even(x: int32)
-    .decl odd(x: int32)
+    relation step(i32, i32);
+    relation even(i32);
+    relation odd(i32);
 
-    step(0, 1).
-    step(1, 2).
-    step(2, 3).
-    step(3, 4).
-    even(0).
+    step(0, 1);
+    step(1, 2);
+    step(2, 3);
+    step(3, 4);
+    even(0);
 
-    odd(y) :- even(x), step(x, y).
-    even(y) :- odd(x), step(x, y).
+    odd(y) <-- even(x), step(x, y);
+    even(y) <-- odd(x), step(x, y);
 }
 
 #[test]

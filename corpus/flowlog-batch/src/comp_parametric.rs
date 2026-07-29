@@ -1,12 +1,12 @@
 crate::fixture_program! {
     pub struct CompParametric;
-    .decl input_a(c0: i32, c1: i32)
-    .decl input_b(c0: String, c1: String)
-    .decl a__p(c0: i32, c1: i32)
-    .decl b__p(c0: String, c1: String)
+    relation input_a(i32, i32);
+    relation input_b(String, String);
+    relation a__p(i32, i32);
+    relation b__p(String, String);
 
-    a__p(x, y) :- input_a(x, y).
-    b__p(x, y) :- input_b(x, y).
+    a__p(x, y) <-- input_a(x, y);
+    b__p(x, y) <-- input_b(x, y);
 }
 
 crate::fixture_io! {

@@ -2,19 +2,19 @@ use miniflow::miniflow;
 
 miniflow! {
     pub struct FizzBuzz;
-    .decl number(value: isize)
-    .decl divisible(value: isize, divisor: isize)
-    .decl fizz(value: isize)
-    .decl buzz(value: isize)
-    .decl fizz_buzz(value: isize)
-    .decl other(value: isize)
+    relation number(isize);
+    relation divisible(isize, isize);
+    relation fizz(isize);
+    relation buzz(isize);
+    relation fizz_buzz(isize);
+    relation other(isize);
 
-    divisible(x, 3) :- number(x), x % 3 = 0 .
-    divisible(x, 5) :- number(x), x % 5 = 0 .
-    fizz(x) :- number(x), divisible(x, 3), !divisible(x, 5).
-    buzz(x) :- number(x), !divisible(x, 3), divisible(x, 5).
-    fizz_buzz(x) :- number(x), divisible(x, 3), divisible(x, 5).
-    other(x) :- number(x), !divisible(x, 3), !divisible(x, 5).
+    divisible(x, 3) <-- number(x), if x % 3 == 0;
+    divisible(x, 5) <-- number(x), if x % 5 == 0;
+    fizz(x) <-- number(x), divisible(x, 3), !divisible(x, 5);
+    buzz(x) <-- number(x), !divisible(x, 3), divisible(x, 5);
+    fizz_buzz(x) <-- number(x), divisible(x, 3), divisible(x, 5);
+    other(x) <-- number(x), !divisible(x, 3), !divisible(x, 5);
 }
 
 pub fn check() {

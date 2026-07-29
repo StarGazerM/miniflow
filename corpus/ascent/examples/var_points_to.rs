@@ -19,19 +19,19 @@ name_type!(Field);
 
 miniflow! {
     pub struct VarPointsTo;
-    .decl assign(to: Var, from: Var)
-    .decl new(variable: Var, object: Obj)
-    .decl ld(to: Var, base: Var, field: Field)
-    .decl st(base: Var, field: Field, from: Var)
-    .decl alias(left: Var, right: Var)
-    .decl points_to(variable: Var, object: Obj)
+    relation assign(Var, Var);
+    relation new(Var, Obj);
+    relation ld(Var, Var, Field);
+    relation st(Var, Field, Var);
+    relation alias(Var, Var);
+    relation points_to(Var, Obj);
 
-    alias(x, x) :- assign(x, _).
-    alias(x, x) :- assign(_, x).
-    alias(x, y) :- assign(x, y).
-    alias(x, y) :- ld(x, a, field), alias(a, b), st(b, field, y).
-    points_to(x, object) :- new(x, object).
-    points_to(x, object) :- alias(x, z), points_to(z, object).
+    alias(x, x) <-- assign(x, _);
+    alias(x, x) <-- assign(_, x);
+    alias(x, y) <-- assign(x, y);
+    alias(x, y) <-- ld(x, a, field), alias(a, b), st(b, field, y);
+    points_to(x, object) <-- new(x, object);
+    points_to(x, object) <-- alias(x, z), points_to(z, object);
 }
 
 pub fn check() {

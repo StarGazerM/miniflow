@@ -2,12 +2,12 @@ use miniflow::miniflow;
 
 miniflow! {
     pub struct NegationClause;
-    .decl number(value: int32)
-    .decl even(value: int32)
-    .decl odd(value: int32)
+    relation number(i32);
+    relation even(i32);
+    relation odd(i32);
 
-    even(x) :- number(x), x % 2 = 0 .
-    odd(x) :- number(x), !even(x).
+    even(x) <-- number(x), if x % 2 == 0;
+    odd(x) <-- number(x), !even(x);
 }
 
 pub fn check() {

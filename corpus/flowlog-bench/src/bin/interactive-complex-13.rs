@@ -6,23 +6,29 @@ use harness::*;
 
 miniflow::miniflow! {
     #![flowlog_batch]
+    #![output(q13)]
 
     struct InteractiveComplex13;
 
-    .decl param(source: int64, target: int64)
-    .decl knows(source: int64, target: int64)
-    .decl dist(source: int64, target: int64, distance: int64)
-    .decl q13(distance: int64)
+    relation param(i64, i64);
+    relation knows(i64, i64);
+    relation dist(i64, i64, i64);
+    relation q13(i64);
 
-    dist(source, source, min(0)) :- param(source, _).
-    dist(source, destination, min(distance + 1)) :-
+    dist(source, source, minimum) <--
+        agg minimum = min(0) in param(source, _);
+
+    dist(source, destination, minimum) <--
         dist(source, middle, distance),
-        knows(middle, destination).
+        agg minimum = min(*distance + 1) in knows(middle, destination);
 
-    q13(distance) :- param(_, target), dist(_, target, distance).
-    q13(-1) :- param(_, target), !dist(_, target, _).
+    q13(distance) <--
+        param(_, target),
+        dist(_, target, distance);
 
-    .output q13
+    q13(-1) <--
+        param(_, target),
+        !dist(_, target, _);
 }
 
 fn main() {

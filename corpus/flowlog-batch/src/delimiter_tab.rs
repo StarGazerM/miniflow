@@ -3,10 +3,10 @@ use std::path::Path;
 
 crate::fixture_program! {
     pub struct DelimiterTab;
-    .decl pair(c0: i32, c1: i32)
-    .decl copy(c0: i32, c1: i32)
+    relation pair(i32, i32);
+    relation copy(i32, i32);
 
-    copy(a, b) :- pair(a, b).
+    copy(a, b) <-- pair(a, b);
 }
 
 pub fn run(fixture_dir: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {

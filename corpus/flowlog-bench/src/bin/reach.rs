@@ -1,31 +1,20 @@
 #![allow(clippy::unreadable_literal, clippy::wildcard_imports)]
 
-// MiniFlow FlowLog-syntax translation of programs/oracle/souffle/reach.dl (join order preserved)
-use harness::*;
-use miniflow::miniflow;
+mod ascent {
+    macro_rules! ascent_par {
+        ($($program:tt)*) => {
+            miniflow::miniflow! {
+                #![flowlog_batch]
+                #![output(reach)]
+                $($program)*
+            }
+        };
+    }
 
-miniflow! {
-    #![flowlog_batch]
-
-    struct Reach;
-
-    .decl source(c0: i32)
-    .decl arc(c0: i32, c1: i32)
-    .decl reach(c0: i32)
-
-    reach(y) :- source(y).
-    reach(y) :- reach(x), arc(x, y).
-
-    .output reach
+    pub(crate) use ascent_par;
 }
 
-fn main() {
-    let dir = bench_init();
-    let mut prog = Reach::default();
-    timed_load(|| {
-        prog.source = load_rel(&dir, "Source.csv", ',');
-        prog.arc = load_rel(&dir, "Arc.csv", ',');
-    });
-    timed_run(|| prog.run());
-    printsize("Reach", prog.reach.len());
-}
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../flowlog-bench/programs/oracle/ascent/reach/src/main.rs"
+));

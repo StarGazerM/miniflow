@@ -1,10 +1,10 @@
 crate::fixture_program! {
     pub struct JoinTwoWay;
-    .decl employee(c0: i32, c1: String)
-    .decl salary(c0: i32, c1: i32)
-    .decl out(c0: i32, c1: String, c2: i32)
+    relation employee(i32, String);
+    relation salary(i32, i32);
+    relation out(i32, String, i32);
 
-    out(id, name, amount) :- employee(id, name), salary(id, amount).
+    out(id, name, amount) <-- employee(id, name), salary(id, amount);
 }
 
 crate::fixture_io! {

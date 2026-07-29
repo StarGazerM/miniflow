@@ -7,8 +7,11 @@ repository.workspace = true
 description = "Embedded batch Datalog over Timely and Differential Dataflow."
 
 [dependencies]
+differential-dataflow.workspace = true
 miniflow-macro.workspace = true
-miniflow-runtime.workspace = true
+ordered-float.workspace = true
+serde = { version = "1", features = ["derive"] }
+timely.workspace = true
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive", "rc"] }

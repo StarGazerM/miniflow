@@ -1,7 +1,17 @@
-[build]
+[profile.dev]
+debug = 0
 incremental = false
-target-dir = "/tmp/miniflow-target"
 
-[env]
-CARGO_CACHE_RUSTC_INFO = { value = "0", force = true }
-CARGO_INCREMENTAL = { value = "0", force = true }
+[profile.test]
+debug = 0
+incremental = false
+
+[profile.release]
+debug = 0
+incremental = false
+strip = "symbols"
+
+[profile.bench]
+debug = 0
+incremental = false
+strip = "symbols"

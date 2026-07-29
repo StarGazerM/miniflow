@@ -19,29 +19,8 @@ dependencies = [
 name = "ascent-flow"
 version = "0.1.0"
 dependencies = [
- "ascent-flow-macro",
  "miniflow",
- "miniflow-runtime",
- "serde",
-]
-
-[[package]]
-name = "ascent-flow-macro"
-version = "0.1.0"
-dependencies = [
- "ascent-flow-syntax",
- "miniflow-core",
- "proc-macro2",
- "syn 3.0.3",
-]
-
-[[package]]
-name = "ascent-flow-syntax"
-version = "0.1.0"
-dependencies = [
- "miniflow-core",
- "proc-macro2",
- "syn 3.0.3",
+ "miniflow-macro",
 ]
 
 [[package]]
@@ -340,18 +319,18 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "miniflow"
 version = "0.1.0"
 dependencies = [
+ "differential-dataflow",
  "miniflow-macro",
- "miniflow-runtime",
+ "ordered-float",
  "serde",
+ "timely",
 ]
 
 [[package]]
 name = "miniflow-core"
 version = "0.1.0"
 dependencies = [
- "ascent-flow-syntax",
  "itertools 0.15.0",
- "miniflow-syntax",
  "petgraph",
  "prettyplease",
  "proc-macro2",
@@ -365,7 +344,6 @@ version = "0.1.0"
 dependencies = [
  "miniflow",
  "miniflow-core",
- "miniflow-syntax",
  "ordered-float",
  "proc-macro2",
  "quote",
@@ -384,29 +362,7 @@ name = "miniflow-macro"
 version = "0.1.0"
 dependencies = [
  "miniflow-core",
- "miniflow-syntax",
  "proc-macro2",
- "syn 3.0.3",
-]
-
-[[package]]
-name = "miniflow-runtime"
-version = "0.1.0"
-dependencies = [
- "differential-dataflow",
- "ordered-float",
- "serde",
- "timely",
-]
-
-[[package]]
-name = "miniflow-syntax"
-version = "0.1.0"
-dependencies = [
- "miniflow-core",
- "prettyplease",
- "proc-macro2",
- "quote",
  "syn 3.0.3",
 ]
 

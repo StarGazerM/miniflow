@@ -1,14 +1,14 @@
 crate::fixture_program! {
     pub struct JoinThreeWay;
-    .decl employee(c0: i32, c1: i32)
-    .decl dept(c0: i32, c1: String)
-    .decl salary(c0: i32, c1: i32)
-    .decl out(c0: i32, c1: String, c2: i32)
+    relation employee(i32, i32);
+    relation dept(i32, String);
+    relation salary(i32, i32);
+    relation out(i32, String, i32);
 
-    out(employee_id, dept_name, amount) :-
+    out(employee_id, dept_name, amount) <--
         employee(employee_id, dept_id),
         dept(dept_id, dept_name),
-        salary(employee_id, amount).
+        salary(employee_id, amount);
 }
 
 crate::fixture_io! {

@@ -10,33 +10,33 @@ mod udf {
 
 crate::fixture_program! {
     pub struct UdfComparison;
-    .decl flight(c0: i32, c1: i32, c2: i32, c3: i32)
-    .decl gt700(c0: i32, c1: i32)
-    .decl rhs_lte150(c0: i32, c1: i32)
-    .decl udf_lt_udf(c0: i32, c1: i32)
-    .decl eq590(c0: i32, c1: i32)
-    .decl neq590(c0: i32, c1: i32)
-    .decl multi(c0: i32, c1: i32)
+    relation flight(i32, i32, i32, i32);
+    relation gt700(i32, i32);
+    relation rhs_lte150(i32, i32);
+    relation udf_lt_udf(i32, i32);
+    relation eq590(i32, i32);
+    relation neq590(i32, i32);
+    relation multi(i32, i32);
 
-    gt700(source, destination) :-
+    gt700(source, destination) <--
         flight(source, destination, fare, duration),
-        udf::cost(*fare, *duration) > 700.
-    rhs_lte150(source, destination) :-
+        if udf::cost(*fare, *duration) > 700;
+    rhs_lte150(source, destination) <--
         flight(source, destination, _, _),
-        150 >= udf::risk(*source, *destination).
-    udf_lt_udf(source, destination) :-
+        if 150 >= udf::risk(*source, *destination);
+    udf_lt_udf(source, destination) <--
         flight(source, destination, _, _),
-        udf::risk(*source, *destination) < udf::risk(*destination, *source).
-    eq590(source, destination) :-
+        if udf::risk(*source, *destination) < udf::risk(*destination, *source);
+    eq590(source, destination) <--
         flight(source, destination, fare, duration),
-        udf::cost(*fare, *duration) == 590.
-    neq590(source, destination) :-
+        if udf::cost(*fare, *duration) == 590;
+    neq590(source, destination) <--
         flight(source, destination, fare, duration),
-        udf::cost(*fare, *duration) != 590.
-    multi(source, destination) :-
+        if udf::cost(*fare, *duration) != 590;
+    multi(source, destination) <--
         flight(source, destination, fare, duration),
-        udf::cost(*fare, *duration) > 700,
-        udf::risk(*source, *destination) >= 150.
+        if udf::cost(*fare, *duration) > 700,
+        if udf::risk(*source, *destination) >= 150;
 }
 
 crate::fixture_io! {

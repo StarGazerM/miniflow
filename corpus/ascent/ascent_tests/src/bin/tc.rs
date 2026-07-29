@@ -1,6 +1,6 @@
-use ascent_flow::ascent_flow;
+use miniflow::miniflow;
 
-ascent_flow! {
+miniflow! {
     pub struct TransitiveClosureBinary;
     relation edge(i32, i32);
     relation path(i32, i32);

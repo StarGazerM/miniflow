@@ -1,11 +1,11 @@
 crate::fixture_program! {
     pub struct TypeBool;
-    .decl person(c0: i32, c1: String, c2: bool)
-    .decl active_person(c0: i32, c1: String)
-    .decl inactive_person(c0: i32, c1: String)
+    relation person(i32, String, bool);
+    relation active_person(i32, String);
+    relation inactive_person(i32, String);
 
-    active_person(id, name) :- person(id, name, true).
-    inactive_person(id, name) :- person(id, name, false).
+    active_person(id, name) <-- person(id, name, true);
+    inactive_person(id, name) <-- person(id, name, false);
 }
 
 crate::fixture_io! {

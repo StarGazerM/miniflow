@@ -1,16 +1,16 @@
 crate::fixture_program! {
     pub struct JoinSelf;
-    .decl edge(c0: i32, c1: i32)
-    .decl two_hop(c0: i32, c1: i32)
-    .decl triangle(c0: i32, c1: i32, c2: i32)
+    relation edge(i32, i32);
+    relation two_hop(i32, i32);
+    relation triangle(i32, i32, i32);
 
-    two_hop(a, c) :- edge(a, b), edge(b, c).
-    triangle(a, b, c) :-
+    two_hop(a, c) <-- edge(a, b), edge(b, c);
+    triangle(a, b, c) <--
         edge(a, b),
         edge(b, c),
         edge(c, a),
-        *a < *b,
-        *b < *c.
+        if *a < *b,
+        if *b < *c;
 }
 
 crate::fixture_io! {

@@ -75,14 +75,12 @@ fn ascent_main_test_matrix_matches() {
 fn ascent_test_utilities_match() {
     utils::check();
 }
-
 #[path = "../../../corpus/ascent/ascent_tests/src/agg_tests.rs"]
 mod agg_tests;
 #[test]
 fn ascent_aggregate_tests_match() {
     agg_tests::check();
 }
-
 #[path = "../../../corpus/ascent/ascent_tests/src/analysis_exp.rs"]
 mod analysis_exp;
 #[test]

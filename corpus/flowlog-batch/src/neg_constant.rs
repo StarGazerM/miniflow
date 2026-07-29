@@ -1,10 +1,10 @@
 crate::fixture_program! {
     pub struct NegConstant;
-    .decl person(c0: i32)
-    .decl tag(c0: i32, c1: i32)
-    .decl not_tagged_1(c0: i32)
+    relation person(i32);
+    relation tag(i32, i32);
+    relation not_tagged_1(i32);
 
-    not_tagged_1(id) :- person(id), !tag(id, 1).
+    not_tagged_1(id) <-- person(id), !tag(id, 1);
 }
 
 crate::fixture_io! {

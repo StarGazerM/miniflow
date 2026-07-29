@@ -1,14 +1,15 @@
 crate::fixture_program! {
     pub struct AggSum;
-    .decl sale(c0: i32, c1: i32, c2: i32)
-    .decl dept(c0: i32, c1: String)
-    .decl dept_sale(c0: i32, c1: i32)
-    .decl dept_total(c0: i32, c1: i32)
+    relation sale(i32, i32, i32);
+    relation dept(i32, String);
+    relation dept_sale(i32, i32);
+    relation dept_total(i32, i32);
 
-    dept_sale(dept_id, amount) :-
+    dept_sale(dept_id, amount) <--
         sale(dept_id, _, amount),
-        dept(dept_id, _).
-    dept_total(dept_id, sum(amount)) :- dept_sale(dept_id, amount).
+        dept(dept_id, _);
+    dept_total(dept_id, total) <--
+        agg total = sum(amount) in dept_sale(dept_id, amount);
 }
 
 crate::fixture_io! {

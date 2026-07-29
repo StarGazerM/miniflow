@@ -2,7 +2,6 @@
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::cast_sign_loss,
-    clippy::bool_comparison,
     clippy::stable_sort_primitive,
     clippy::too_many_lines,
     clippy::unused_unit,
@@ -61,13 +60,13 @@ macro_rules! fixture_io {
 pub(crate) use fixture_io;
 
 macro_rules! binary_i32_filter_fixture {
-    ($name:ident, $value:ident, $left:tt, $operator:tt, $right:tt) => {
+    ($name:ident, $value:ident, $condition:expr) => {
         crate::fixture_program! {
             pub struct $name;
-            .decl data(c0: i32, c1: i32)
-            .decl out(c0: i32, c1: i32)
+            relation data(i32, i32);
+            relation out(i32, i32);
 
-            out(id, $value) :- data(id, $value), $left $operator $right.
+            out(id, $value) <-- data(id, $value), if $condition;
         }
 
         pub fn run(

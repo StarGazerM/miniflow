@@ -1,14 +1,14 @@
 crate::fixture_program! {
     pub struct ArithCat;
-    .decl first(c0: i32, c1: String)
-    .decl last(c0: i32, c1: String)
-    .decl full(c0: i32, c1: String)
-    .decl greeting(c0: i32, c1: String)
+    relation first(i32, String);
+    relation last(i32, String);
+    relation full(i32, String);
+    relation greeting(i32, String);
 
-    full(id, cat(first_name, cat(" ", last_name))) :-
+    full(id, cat(first_name, cat(" ", last_name))) <--
         first(id, first_name),
-        last(id, last_name).
-    greeting(id, cat("Hello ", name)) :- first(id, name).
+        last(id, last_name);
+    greeting(id, cat("Hello ", name)) <-- first(id, name);
 }
 
 crate::fixture_io! {

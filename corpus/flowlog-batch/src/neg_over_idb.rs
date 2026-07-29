@@ -1,11 +1,11 @@
 crate::fixture_program! {
     pub struct NegOverIdb;
-    .decl person(c0: i32, c1: i32)
-    .decl high_scorer(c0: i32)
-    .decl not_high_scorer(c0: i32)
+    relation person(i32, i32);
+    relation high_scorer(i32);
+    relation not_high_scorer(i32);
 
-    high_scorer(id) :- person(id, score), *score > 80.
-    not_high_scorer(id) :- person(id, _), !high_scorer(id).
+    high_scorer(id) <-- person(id, score), if *score > 80;
+    not_high_scorer(id) <-- person(id, _), !high_scorer(id);
 }
 
 crate::fixture_io! {

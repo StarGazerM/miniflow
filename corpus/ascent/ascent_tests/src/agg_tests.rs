@@ -1,8 +1,8 @@
 #![allow(clippy::cast_possible_truncation)]
 
-use ascent_flow::ascent_flow;
+use miniflow::miniflow;
 
-ascent_flow! {
+miniflow! {
     struct Percentile;
     relation seed(i32);
     relation foo(i32, i32);
@@ -28,7 +28,7 @@ ascent_flow! {
     baz(group, candidate) <-- foo(group, _), rank(group, candidate, 75);
 }
 
-ascent_flow! {
+miniflow! {
     struct GroupedMeans;
     relation seed(i32);
     relation foo(i32, i32);
@@ -47,7 +47,7 @@ ascent_flow! {
         agg y_mean = mean(y) in bar(group, _, y);
 }
 
-ascent_flow! {
+miniflow! {
     struct NegationWithWildcard;
     relation foo(i32, i32);
     relation bar(i32, i32, i32);
@@ -65,7 +65,7 @@ ascent_flow! {
     baz2(x, y) <-- foo(x, y), !bar(x, y, _);
 }
 
-ascent_flow! {
+miniflow! {
     struct NegationExact;
     relation foo(i32, i32);
     relation bar(i32, i32);
@@ -81,7 +81,7 @@ ascent_flow! {
     baz(x, y) <-- foo(x, y), !bar(x, y);
 }
 
-ascent_flow! {
+miniflow! {
     struct NegationExpression;
     relation foo(i32, i32);
     relation bar(i32, i32, i32);
@@ -96,7 +96,7 @@ ascent_flow! {
     baz(x, y) <-- foo(x, y), !bar(x, y, y + 1);
 }
 
-ascent_flow! {
+miniflow! {
     struct SimpleMean;
     relation foo(i32);
     relation bar(i32);

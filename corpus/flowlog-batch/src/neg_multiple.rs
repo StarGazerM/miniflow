@@ -1,16 +1,16 @@
 crate::fixture_program! {
     pub struct NegMultiple;
-    .decl person(c0: i32)
-    .decl manager(c0: i32)
-    .decl intern(c0: i32)
-    .decl on_leave(c0: i32)
-    .decl active_regular(c0: i32)
+    relation person(i32);
+    relation manager(i32);
+    relation intern(i32);
+    relation on_leave(i32);
+    relation active_regular(i32);
 
-    active_regular(id) :-
+    active_regular(id) <--
         person(id),
         !manager(id),
         !intern(id),
-        !on_leave(id).
+        !on_leave(id);
 }
 
 crate::fixture_io! {

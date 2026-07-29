@@ -1,11 +1,11 @@
 crate::fixture_program! {
     pub struct ProbeEdbIdbRecursiveWithNonrec;
-    .decl edge(c0: i32, c1: i32)
-    .decl reach(c0: i32, c1: i32)
+    relation edge(i32, i32);
+    relation reach(i32, i32);
 
-    reach(1, 1).
-    reach(x, y) :- edge(x, y).
-    reach(x, z) :- reach(x, y), edge(y, z).
+    reach(1, 1);
+    reach(x, y) <-- edge(x, y);
+    reach(x, z) <-- reach(x, y), edge(y, z);
 }
 
 crate::fixture_io! {

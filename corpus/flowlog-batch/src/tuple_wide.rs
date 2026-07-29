@@ -1,7 +1,7 @@
 crate::fixture_program! {
     pub struct TupleWide;
-    .decl in_(c0: String, c1: String, c2: String, c3: String, c4: String, c5: String)
-    .decl out(c0: (String, String, String, String, String, String))
+    relation in_(String, String, String, String, String, String);
+    relation out((String, String, String, String, String, String));
 
     in_(
         "p".to_owned(),
@@ -10,8 +10,8 @@ crate::fixture_program! {
         "s".to_owned(),
         "t".to_owned(),
         "u".to_owned(),
-    ).
-    out((a, b, c, d, e, f)) :- in_(a, b, c, d, e, f).
+    );
+    out((a, b, c, d, e, f)) <-- in_(a, b, c, d, e, f);
 }
 
 crate::fixture_io! {

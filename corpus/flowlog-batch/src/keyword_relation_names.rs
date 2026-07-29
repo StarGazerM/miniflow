@@ -1,10 +1,10 @@
 crate::fixture_program! {
     pub struct KeywordRelationNames;
-    .decl type_(c0: i32, c1: String)
-    .decl match_(c0: i32, c1: String)
-    .decl out(c0: i32, c1: String)
+    relation type_(i32, String);
+    relation match_(i32, String);
+    relation out(i32, String);
 
-    out(id, name) :- type_(id, name), match_(id, _).
+    out(id, name) <-- type_(id, name), match_(id, _);
 }
 
 crate::fixture_io! {

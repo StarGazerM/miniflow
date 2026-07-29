@@ -1,9 +1,9 @@
 crate::fixture_program! {
     pub struct ArithConstHead;
-    .decl data(c0: i32)
-    .decl with_tag(c0: i32, c1: i32)
+    relation data(i32);
+    relation with_tag(i32, i32);
 
-    with_tag(x, 42) :- data(x).
+    with_tag(x, 42) <-- data(x);
 }
 
 crate::fixture_io! {

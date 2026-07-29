@@ -1,31 +1,20 @@
 #![allow(clippy::unreadable_literal, clippy::wildcard_imports)]
 
-// MiniFlow FlowLog-syntax translation of programs/oracle/souffle/tc.dl (join order preserved)
-// inputs (csv -> relation): Arc.csv -> arc
-// sizes (printsize): tc
-use harness::*;
-use miniflow::miniflow;
+mod ascent {
+    macro_rules! ascent_par {
+        ($($program:tt)*) => {
+            miniflow::miniflow! {
+                #![flowlog_batch]
+                #![output(tc)]
+                $($program)*
+            }
+        };
+    }
 
-miniflow! {
-    #![flowlog_batch]
-
-    struct Tc;
-
-    .decl arc(c0: i32, c1: i32)
-    .decl tc(c0: i32, c1: i32)
-
-    tc(x, y) :- arc(x, y).
-    tc(x, y) :- tc(x, z), arc(z, y).
-
-    .output tc
+    pub(crate) use ascent_par;
 }
 
-fn main() {
-    let dir = bench_init();
-    let mut prog = Tc::default();
-    timed_load(|| {
-        prog.arc = load_rel(&dir, "Arc.csv", ',');
-    });
-    timed_run(|| prog.run());
-    printsize("Tc", prog.tc.len());
-}
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../flowlog-bench/programs/oracle/ascent/tc/src/main.rs"
+));

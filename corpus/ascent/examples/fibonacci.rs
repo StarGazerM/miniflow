@@ -2,16 +2,16 @@ use miniflow::miniflow;
 
 miniflow! {
     pub struct Fibonacci;
-    .decl number(value: isize)
-    .decl fib(index: isize, value: isize)
+    relation number(isize);
+    relation fib(isize, isize);
 
-    fib(0, 1) :- number(0).
-    fib(1, 1) :- number(1).
-    fib(x, y + z) :-
+    fib(0, 1) <-- number(0);
+    fib(1, 1) <-- number(1);
+    fib(x, y + z) <--
         number(x),
-        *x >= 2,
+        if *x >= 2,
         fib(x - 1, y),
-        fib(x - 2, z).
+        fib(x - 2, z);
 }
 
 pub fn check() {

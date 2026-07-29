@@ -9,7 +9,6 @@ default-run = "miniflow-flowlog-batch-corpus"
 [dependencies]
 miniflow.workspace = true
 miniflow-core.workspace = true
-miniflow-syntax.workspace = true
 ordered-float.workspace = true
 proc-macro2.workspace = true
 quote.workspace = true

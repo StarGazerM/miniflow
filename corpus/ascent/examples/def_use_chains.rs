@@ -27,18 +27,20 @@ pub enum Instr {
 
 miniflow! {
     pub struct DefUseChains;
-    .decl read(read: Read, variable: Var)
-    .decl write(write: Write, variable: Var)
-    .decl succ(from: Instr, to: Instr)
-    .decl flow(from: Instr, to: Instr)
-    .decl def_use(write: Write, read: Read)
+    relation read(Read, Var);
+    relation write(Write, Var);
+    relation succ(Instr, Instr);
+    relation flow(Instr, Instr);
+    relation def_use(Write, Read);
 
-    flow(x, y) :- succ(x, y).
-    flow(x, z) :- flow(x, y), flow(y, z).
-    def_use(w, r) :-
+    flow(x, y) <-- succ(x, y);
+    flow(x, z) <-- flow(x, y), flow(y, z);
+    def_use(w, r) <--
         write(w, variable),
         read(r, variable),
-        flow(Instr::Write(w.clone()), Instr::Read(r.clone())).
+        let write_instruction = Instr::Write(w.clone()),
+        let read_instruction = Instr::Read(r.clone()),
+        flow(write_instruction, read_instruction);
 }
 
 pub fn check() {

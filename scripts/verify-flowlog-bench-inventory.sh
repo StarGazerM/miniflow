@@ -23,8 +23,6 @@ if [[ "${actual_commit}" != "${PINNED_COMMIT}" ]]; then
     exit 1
 fi
 
-python3 "${ROOT_DIR}/scripts/import-flowlog-bench.py" --check
-
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/miniflow-flowlog-bench-inventory.XXXXXX")"
 trap 'rm -rf "${work_dir}"' EXIT
 
@@ -40,7 +38,9 @@ awk -F '\t' '
         printf "program manifest line %d has invalid upstream kind %s\n", NR, $2 > "/dev/stderr"
         ok = 0
     }
-    $3 != "flowlog-syntax" {
+    $3 != "ascent-include" &&
+        $3 != "local-recursive-aggregate" &&
+        $3 != "local-ldbc" {
         printf "program manifest line %d has invalid implementation %s\n", NR, $3 > "/dev/stderr"
         ok = 0
     }
@@ -82,21 +82,20 @@ while IFS=$'\t' read -r program upstream_kind implementation; do
     [[ "${program}" == \#* || -z "${program}" ]] && continue
     local_source="${CORPUS}/src/bin/${program}.rs"
     test -f "${local_source}"
-    test "${implementation}" = flowlog-syntax
     grep -Fq '#![flowlog_batch]' "${local_source}"
-    grep -Fq 'miniflow!' "${local_source}"
-    grep -Fq '.decl ' "${local_source}"
-    grep -Fq ':-' "${local_source}"
-    grep -Fq '.output ' "${local_source}"
-    if grep -Eq 'ascent_par!|<--|^[[:space:]]*relation[[:space:]]' "${local_source}"; then
-        echo "legacy Ascent syntax remains in ${local_source}" >&2
-        exit 1
-    fi
-    case "${upstream_kind}" in
-        canonical|configured-alias)
+    case "${implementation}" in
+        ascent-include)
             test -f "${UPSTREAM}/programs/oracle/ascent/${program}/src/main.rs"
+            grep -Fq \
+                "flowlog-bench/programs/oracle/ascent/${program}/src/main.rs" \
+                "${local_source}"
             ;;
-        ldbc)
+        local-recursive-aggregate)
+            test "${program}" = cc -o "${program}" = sssp
+            test -f "${UPSTREAM}/programs/oracle/flowlog/${program}/default.dl"
+            ;;
+        local-ldbc)
+            test "${upstream_kind}" = ldbc
             test -f "${UPSTREAM}/programs/ldbc/flowlog/${program}.dl"
             ;;
     esac

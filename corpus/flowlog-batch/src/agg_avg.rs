@@ -1,14 +1,15 @@
 crate::fixture_program! {
     pub struct AggAvg;
-    .decl student(c0: i32, c1: i32)
-    .decl score(c0: i32, c1: i32)
-    .decl class_score(c0: i32, c1: i32, c2: i32)
-    .decl class_avg(c0: i32, c1: i32)
+    relation student(i32, i32);
+    relation score(i32, i32);
+    relation class_score(i32, i32, i32);
+    relation class_avg(i32, i32);
 
-    class_score(class_id, student_id, value) :-
+    class_score(class_id, student_id, value) <--
         student(student_id, class_id),
-        score(student_id, value).
-    class_avg(class_id, average(value)) :- class_score(class_id, _, value).
+        score(student_id, value);
+    class_avg(class_id, average.0 as i32) <--
+        agg average = mean(value) in class_score(class_id, _, value);
 }
 
 crate::fixture_io! {

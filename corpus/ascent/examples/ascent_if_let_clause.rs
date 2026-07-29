@@ -2,15 +2,15 @@ use miniflow::miniflow;
 
 miniflow! {
     pub struct IfLetClause;
-    .decl option(present: bool, value: isize)
-    .decl some(value: isize)
+    relation option(Option<isize>);
+    relation some(isize);
 
-    some(y) :- option(true, y).
+    some(y) <-- option(x), if let Some(y) = x;
 }
 
 pub fn check() {
     let mut program = IfLetClause {
-        option: vec![(false, 0), (true, 1), (true, 2), (true, 3)],
+        option: vec![(None,), (Some(1),), (Some(2),), (Some(3),)],
         ..IfLetClause::default()
     };
     program.run();

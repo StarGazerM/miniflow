@@ -1,13 +1,15 @@
 crate::fixture_program! {
     pub struct RecursiveMin;
-    .decl source(c0: i32)
-    .decl edge(c0: i32, c1: i32, c2: i32)
-    .decl min_dist(c0: i32, c1: i32)
+    relation source(i32);
+    relation edge(i32, i32, i32);
+    relation min_dist(i32, i32);
 
-    min_dist(node_id, min(0)) :- source(node_id).
-    min_dist(destination, min(*distance + *weight)) :-
+    min_dist(node_id, minimum) <--
+        agg minimum = min(0) in source(node_id);
+    min_dist(destination, minimum) <--
         min_dist(source_id, distance),
-        edge(source_id, destination, weight).
+        agg minimum = min(*distance + *weight)
+            in edge(source_id, destination, weight);
 }
 
 pub fn run(

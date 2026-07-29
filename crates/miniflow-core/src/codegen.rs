@@ -391,6 +391,17 @@ impl HirProgram {
                 BTreeMap::<u64, (RelationId, Vec<(Vec<syn::Stmt>, Option<Ident>)>)>::new();
             for emission in emitted {
                 let block: syn::Block = syn::parse2(quote! {{ #emission }})?;
+                let is_generic = block.stmts.iter().any(|statement| {
+                    matches!(
+                    statement,
+                    syn::Stmt::Local(local)
+                        if matches!(
+                            &local.pat,
+                            syn::Pat::Ident(pattern)
+                                if pattern.ident.to_string().starts_with("__miniflow_rule_")
+                        )
+                    )
+                });
                 let mut last_transform = None;
                 let mut emission_bindings =
                     BTreeMap::<u64, (RelationId, Vec<syn::Stmt>, Option<Ident>)>::new();
@@ -402,7 +413,8 @@ impl HirProgram {
                         },
                         _ => None,
                     };
-                    if let Some(ident) = &local_ident
+                    if !is_generic
+                        && let Some(ident) = &local_ident
                         && ident.to_string().starts_with("t_")
                     {
                         if !ident.to_string().ends_with("_arr") {
@@ -413,7 +425,7 @@ impl HirProgram {
                         }
                     }
                     let relation = match &statement {
-                        syn::Stmt::Local(local) => match &local.pat {
+                        syn::Stmt::Local(local) if !is_generic => match &local.pat {
                             syn::Pat::Ident(pattern) => self
                                 .relations
                                 .iter()
@@ -487,18 +499,41 @@ impl HirProgram {
         rule_index: usize,
         initialized: &mut BTreeSet<RelationId>,
     ) -> Result<Vec<TokenStream>> {
-        for emitter in [
-            Self::emit_flowlog_single_atom_expression,
-            Self::emit_flowlog_direct_aggregate,
-            Self::emit_flowlog_unary_antijoin,
-            Self::emit_flowlog_tuple_equijoin,
-            Self::emit_flowlog_three_atom_join,
-            Self::emit_flowlog_binary_join,
-        ] {
-            if let Some((target, emitted)) = emitter(self, rule_index, initialized) {
-                initialized.insert(target);
-                return Ok(vec![emitted]);
-            }
+        if let Some((target_relation, emitted)) =
+            self.emit_flowlog_single_atom_expression(rule_index, initialized)
+        {
+            initialized.insert(target_relation);
+            return Ok(vec![emitted]);
+        }
+        if let Some((target_relation, emitted)) =
+            self.emit_flowlog_direct_aggregate(rule_index, initialized)
+        {
+            initialized.insert(target_relation);
+            return Ok(vec![emitted]);
+        }
+        if let Some((target_relation, emitted)) =
+            self.emit_flowlog_unary_antijoin(rule_index, initialized)
+        {
+            initialized.insert(target_relation);
+            return Ok(vec![emitted]);
+        }
+        if let Some((target_relation, emitted)) =
+            self.emit_flowlog_tuple_equijoin(rule_index, initialized)
+        {
+            initialized.insert(target_relation);
+            return Ok(vec![emitted]);
+        }
+        if let Some((target_relation, emitted)) =
+            self.emit_flowlog_three_atom_join(rule_index, initialized)
+        {
+            initialized.insert(target_relation);
+            return Ok(vec![emitted]);
+        }
+        if let Some((target_relation, emitted)) =
+            self.emit_flowlog_binary_join(rule_index, initialized)
+        {
+            initialized.insert(target_relation);
+            return Ok(vec![emitted]);
         }
         let rule = &self.rules[rule_index];
         let mut emitted = Vec::with_capacity(rule.heads.len());
@@ -746,11 +781,17 @@ impl HirProgram {
             }
         };
 
-        let binding = emit_collection_binding(
-            &target_collection,
-            &transform,
-            initialized.contains(&head.relation),
-        );
+        let binding = if initialized.contains(&head.relation) {
+            quote! {
+                let #target_collection = #target_collection
+                    .concatenate([#transform.clone()])
+                    .consolidate();
+            }
+        } else {
+            quote! {
+                let #target_collection = #transform.clone().consolidate();
+            }
+        };
         Some((
             head.relation,
             quote! {
@@ -923,11 +964,17 @@ impl HirProgram {
                 })
                 .chain(std::iter::once(aggregate_value)),
         );
-        let initial_binding = emit_collection_binding(
-            &target_collection,
-            &transform,
-            initialized.contains(&head.relation),
-        );
+        let initial_binding = if initialized.contains(&head.relation) {
+            quote! {
+                let #target_collection = #target_collection
+                    .concatenate([#transform.clone()])
+                    .consolidate();
+            }
+        } else {
+            quote! {
+                let #target_collection = #transform.clone().consolidate();
+            }
+        };
 
         Some((
             head.relation,
@@ -2384,11 +2431,15 @@ impl HirProgram {
             }
         };
         let target = collection_ident(&self.relations[head.relation.0]);
-        let binding = emit_collection_binding(
-            &target,
-            &join_transform,
-            initialized.contains(&head.relation),
-        );
+        let binding = if initialized.contains(&head.relation) {
+            quote! {
+                let #target = #target
+                    .concatenate([#join_transform.clone()])
+                    .consolidate();
+            }
+        } else {
+            quote! { let #target = #join_transform.clone().consolidate(); }
+        };
 
         Some((
             head.relation,
@@ -2408,26 +2459,33 @@ impl HirProgram {
         scc: &Scc,
         initialized: &mut BTreeSet<RelationId>,
     ) -> Result<TokenStream> {
-        for emitter in [
-            Self::emit_flowlog_symmetric_closure,
-            Self::emit_flowlog_mutual_unary,
-            Self::emit_flowlog_recursive_aggregate,
-            Self::emit_flowlog_unary_recursive_join,
-            Self::emit_flowlog_binary_recursive_join,
-        ] {
-            if let Some((target, emitted)) = emitter(self, scc, initialized) {
-                initialized.insert(target);
-                return Ok(emitted);
-            }
+        if let Some((target, emitted)) = self.emit_flowlog_symmetric_closure(scc, initialized) {
+            initialized.insert(target);
+            return Ok(emitted);
+        }
+        if let Some((target, emitted)) = self.emit_flowlog_mutual_unary(scc, initialized) {
+            initialized.insert(target);
+            return Ok(emitted);
+        }
+        if let Some((target, emitted)) = self.emit_flowlog_recursive_aggregate(scc, initialized) {
+            initialized.insert(target);
+            return Ok(emitted);
+        }
+        if let Some((target, emitted)) = self.emit_flowlog_unary_recursive_join(scc, initialized) {
+            initialized.insert(target);
+            return Ok(emitted);
+        }
+        if let Some((target, emitted)) = self.emit_flowlog_binary_recursive_join(scc, initialized) {
+            initialized.insert(target);
+            return Ok(emitted);
         }
 
-        let recursive_relations = scc
+        let head_relations = scc
             .rules
             .iter()
             .flat_map(|&index| self.rules[index].heads.iter().map(|head| head.relation))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect_vec();
+            .collect::<BTreeSet<_>>();
+        let recursive_relations = head_relations.iter().copied().collect_vec();
         if recursive_relations.is_empty() {
             return Err(syn::Error::new(
                 Span::call_site(),
@@ -4840,18 +4898,6 @@ fn is_variable_or_wildcard(expression: &Expr) -> bool {
                     && path.path.leading_colon.is_none()
                     && path.path.segments.len() == 1
         )
-}
-
-fn emit_collection_binding(target: &Ident, transform: &Ident, initialized: bool) -> TokenStream {
-    if initialized {
-        quote! {
-            let #target = #target
-                .concatenate([#transform.clone()])
-                .consolidate();
-        }
-    } else {
-        quote! { let #target = #transform.clone().consolidate(); }
-    }
 }
 
 fn emit_head_tuple_tokens(head: &Atom, bindings: &BindingSources) -> Result<TokenStream> {

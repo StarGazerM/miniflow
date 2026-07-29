@@ -2,11 +2,10 @@
 set -euo pipefail
 
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "${ROOT_DIR}/scripts/cargo-env.sh"
 readonly FLOWLOG_DIR="${ROOT_DIR}/flowlog"
 readonly FIXTURES="${FLOWLOG_DIR}/tests/fixtures/datalog-batch"
 readonly MANIFEST="${ROOT_DIR}/corpus/flowlog-batch/manifest.tsv"
-readonly COMPILER="${CARGO_TARGET_DIR}/debug/flowlog-compiler"
+readonly COMPILER="${FLOWLOG_DIR}/target/debug/flowlog-compiler"
 
 "${ROOT_DIR}/scripts/verify-flowlog-oracle.sh"
 cargo build \
@@ -58,7 +57,7 @@ while IFS=$'\t' read -r fixture _family status; do
         --check \
         -B "${fixture_work}/flowlog-build-repeat" \
         -D output
-    "${CARGO_TARGET_DIR}/debug/canonical" "${fixture}" \
+    "${ROOT_DIR}/target/debug/canonical" "${fixture}" \
         >"${fixture_work}/miniflow.rs"
 
     cargo run --quiet \

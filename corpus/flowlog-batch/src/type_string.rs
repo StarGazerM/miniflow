@@ -1,9 +1,9 @@
 crate::fixture_program! {
     pub struct TypeString;
-    .decl data(c0: i32, c1: String)
-    .decl out(c0: i32, c1: String)
+    relation data(i32, String);
+    relation out(i32, String);
 
-    out(id, name) :- data(id, name).
+    out(id, name) <-- data(id, name);
 }
 
 crate::fixture_io! {

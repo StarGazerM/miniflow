@@ -2,17 +2,17 @@ use miniflow::miniflow;
 
 miniflow! {
     pub struct DisjunctionClause;
-    .decl number(value: int32)
-    .decl square(value: int32)
-    .decl even(value: int32)
-    .decl even_or_square(value: int32)
+    relation number(i32);
+    relation square(i32);
+    relation even(i32);
+    relation even_or_square(i32);
 
-    square(y * y) :- number(y), number(y * y).
-    even(x) :- number(x), x % 2 = 0 .
+    square(y * y) <-- number(y), number(y * y);
+    even(x) <-- number(x), if x % 2 == 0;
 
     // The Ascent disjunction is ordinary Datalog union after desugaring.
-    even_or_square(x) :- even(x).
-    even_or_square(x) :- square(x).
+    even_or_square(x) <-- even(x);
+    even_or_square(x) <-- square(x);
 }
 
 pub fn check() {

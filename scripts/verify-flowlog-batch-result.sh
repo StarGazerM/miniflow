@@ -2,10 +2,9 @@
 set -euo pipefail
 
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "${ROOT_DIR}/scripts/cargo-env.sh"
 readonly FIXTURES="${ROOT_DIR}/flowlog/tests/fixtures/datalog-batch"
 readonly MANIFEST="${ROOT_DIR}/corpus/flowlog-batch/manifest.tsv"
-readonly RUNNER="${CARGO_TARGET_DIR}/debug/miniflow-flowlog-batch-corpus"
+readonly RUNNER="${ROOT_DIR}/target/debug/miniflow-flowlog-batch-corpus"
 
 cargo build \
     --manifest-path "${ROOT_DIR}/Cargo.toml" \

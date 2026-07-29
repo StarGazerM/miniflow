@@ -1,11 +1,11 @@
-use ascent_flow::ascent_flow;
+use miniflow::miniflow;
 
-ascent_flow! {
+miniflow! {
     struct RelationTraitsOne;
     relation foo(i32, i32);
 }
 
-ascent_flow! {
+miniflow! {
     struct RelationTraitsTwo;
     relation foo(i32, i32);
 }

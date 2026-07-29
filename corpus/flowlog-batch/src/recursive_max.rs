@@ -1,13 +1,15 @@
 crate::fixture_program! {
     pub struct RecursiveMax;
-    .decl source(c0: i32)
-    .decl edge(c0: i32, c1: i32, c2: i32)
-    .decl max_dist(c0: i32, c1: i32)
+    relation source(i32);
+    relation edge(i32, i32, i32);
+    relation max_dist(i32, i32);
 
-    max_dist(node_id, max(0)) :- source(node_id).
-    max_dist(destination, max(*distance + *weight)) :-
+    max_dist(node_id, maximum) <--
+        agg maximum = max(0) in source(node_id);
+    max_dist(destination, maximum) <--
         max_dist(source_id, distance),
-        edge(source_id, destination, weight).
+        agg maximum = max(*distance + *weight)
+            in edge(source_id, destination, weight);
 }
 
 pub fn run(

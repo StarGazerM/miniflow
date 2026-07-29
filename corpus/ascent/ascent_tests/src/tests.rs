@@ -1,8 +1,8 @@
 #![allow(clippy::cast_possible_truncation)]
 
-use ascent_flow::ascent_flow;
+use miniflow::miniflow;
 
-ascent_flow! {
+miniflow! {
     #![profile]
     struct PatternsAndJoins;
     relation option(i32, Option<i32>);
@@ -39,7 +39,7 @@ ascent_flow! {
     wildcard_result(x) <-- ternary(x, _, _), second(_, x);
 }
 
-ascent_flow! {
+miniflow! {
     struct GeneratorsAndHeads;
     relation pair(i32, i32);
     relation endpoint(i32);
@@ -57,7 +57,7 @@ ascent_flow! {
     left(x.clone()), right(y.clone()) <-- vectors(x, y), if x.len() > 1;
 }
 
-ascent_flow! {
+miniflow! {
     struct ClosureProperties;
     relation edge(i32, i32);
     relation symmetric(bool);
@@ -71,7 +71,7 @@ ascent_flow! {
     closure(x, z) <-- transitive(true), closure(x, y), closure(y, z);
 }
 
-ascent_flow! {
+miniflow! {
     struct Factorial;
     relation calculate(u64);
     relation factorial(u64, u64);
@@ -85,7 +85,7 @@ ascent_flow! {
         factorial(x - 1, previous);
 }
 
-ascent_flow! {
+miniflow! {
     struct RecursiveJoin;
     relation foo(i32, i32);
     relation bar(i32, i32);
@@ -99,7 +99,7 @@ ascent_flow! {
     foo(x, y), bar(x, y) <-- baz(x, y);
 }
 
-ascent_flow! {
+miniflow! {
     struct GroupedAggregate;
     relation foo(i32, i32);
     relation bar(i32, i32, i32);
@@ -114,7 +114,7 @@ ascent_flow! {
         agg minimum = min(value) in bar(x, y, value);
 }
 
-ascent_flow! {
+miniflow! {
     struct ShortestPath;
     relation edge(i32, i32, u32);
     relation path(i32, i32, u32);
@@ -127,7 +127,7 @@ ascent_flow! {
         agg minimum = min(value) in path(x, y, value);
 }
 
-ascent_flow! {
+miniflow! {
     struct EmptyCheck;
     relation edge(i32, i32);
     relation path(i32, i32);
@@ -140,7 +140,7 @@ ascent_flow! {
     legit(y) <-- legit(x), path(x, y);
 }
 
-ascent_flow! {
+miniflow! {
     struct RepeatedVariables;
     relation foo1(i32, i32);
     relation foo2(i32, i32);
@@ -156,7 +156,7 @@ ascent_flow! {
     result(x, y) <-- foo2(x, y), foo1(x, x);
 }
 
-ascent_flow! {
+miniflow! {
     struct MultipleDefinitions;
     relation first(usize);
     relation second(usize);

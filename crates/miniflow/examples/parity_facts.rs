@@ -2,12 +2,12 @@ use miniflow::miniflow;
 
 miniflow! {
     struct Facts;
-    .decl seed(x: int32)
-    .decl output(x: int32)
+    relation seed(i32);
+    relation output(i32);
 
-    seed(1).
-    seed(2).
-    output(x) :- seed(x).
+    seed(1);
+    seed(2);
+    output(x) <-- seed(x);
 }
 
 fn main() {

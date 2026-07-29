@@ -4,16 +4,16 @@ use std::path::Path;
 
 crate::fixture_program! {
     pub struct OutputMultiWorker;
-    .decl edge(c0: i32, c1: i32)
-    .decl source(c0: i32)
-    .decl reach(c0: i32, c1: i32, c2: i32)
-    .decl closest(c0: i32, c1: i32, c2: i32)
+    relation edge(i32, i32);
+    relation source(i32);
+    relation reach(i32, i32, i32);
+    relation closest(i32, i32, i32);
 
-    reach(source_id, source_id, 0) :- source(source_id).
-    reach(source_id, destination, min(*distance + 1)) :-
+    reach(source_id, source_id, 0) <-- source(source_id);
+    reach(source_id, destination, minimum) <--
         reach(source_id, middle, distance),
-        edge(middle, destination).
-    closest(source_id, destination, distance) :- reach(source_id, destination, distance).
+        agg minimum = min(*distance + 1) in edge(middle, destination);
+    closest(source_id, destination, distance) <-- reach(source_id, destination, distance);
 }
 
 struct FnvHasher(u64);

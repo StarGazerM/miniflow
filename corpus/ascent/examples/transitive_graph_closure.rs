@@ -2,14 +2,14 @@ use miniflow::miniflow;
 
 miniflow! {
     pub struct TransitiveGraphClosure;
-    .decl node(value: String)
-    .decl edge(source: String, target: String)
-    .decl reachable(source: String, target: String)
-    .decl closure_of_a(value: String)
+    relation node(String);
+    relation edge(String, String);
+    relation reachable(String, String);
+    relation closure_of_a(String);
 
-    reachable(x, y) :- edge(x, y).
-    reachable(x, z) :- reachable(x, y), edge(y, z).
-    closure_of_a(y) :- reachable("A".to_owned(), y).
+    reachable(x, y) <-- edge(x, y);
+    reachable(x, z) <-- reachable(x, y), edge(y, z);
+    closure_of_a(y) <-- reachable("A".to_owned(), y);
 }
 
 pub fn check() {

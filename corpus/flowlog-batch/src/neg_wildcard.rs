@@ -1,10 +1,10 @@
 crate::fixture_program! {
     pub struct NegWildcard;
-    .decl person(c0: i32)
-    .decl has_task(c0: i32, c1: i32)
-    .decl idle(c0: i32)
+    relation person(i32);
+    relation has_task(i32, i32);
+    relation idle(i32);
 
-    idle(id) :- person(id), !has_task(id, _).
+    idle(id) <-- person(id), !has_task(id, _);
 }
 
 crate::fixture_io! {

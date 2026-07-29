@@ -4,18 +4,18 @@ use miniflow::miniflow;
 
 miniflow! {
     pub struct AggregateClause;
-    .decl number(value: int32)
-    .decl lowest(value: int32)
-    .decl greatest(value: int32)
-    .decl average(value: int32)
-    .decl total(value: int32)
-    .decl cardinality(value: usize)
+    relation number(i32);
+    relation lowest(i32);
+    relation greatest(i32);
+    relation average(i32);
+    relation total(i32);
+    relation cardinality(usize);
 
-    lowest(min(x)) :- number(x).
-    greatest(max(x)) :- number(x).
-    average(average(x)) :- number(x).
-    total(sum(x)) :- number(x).
-    cardinality(count()) :- number(_).
+    lowest(y) <-- agg y = min(x) in number(x);
+    greatest(y) <-- agg y = max(x) in number(x);
+    average(y.round() as i32) <-- agg y = mean(x) in number(x);
+    total(y) <-- agg y = sum(x) in number(x);
+    cardinality(y) <-- agg y = count() in number(_);
 }
 
 pub fn check() {

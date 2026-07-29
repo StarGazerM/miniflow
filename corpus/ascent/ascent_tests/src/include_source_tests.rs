@@ -1,6 +1,6 @@
-use ascent_flow::ascent_flow;
+use miniflow::miniflow;
 
-ascent_flow! {
+miniflow! {
     struct IncludedSources;
     relation edge(usize, usize);
     relation path(usize, usize);

@@ -7,12 +7,8 @@ repository.workspace = true
 description = "Ascent-shaped embedded batch Datalog over the MiniFlow compiler."
 
 [dependencies]
-ascent-flow-macro.workspace = true
-miniflow-runtime.workspace = true
-
-[dev-dependencies]
 miniflow.workspace = true
-serde = { version = "1", features = ["derive", "rc"] }
+miniflow-macro.workspace = true
 
 [lints]
 workspace = true

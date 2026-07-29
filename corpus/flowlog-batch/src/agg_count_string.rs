@@ -1,12 +1,13 @@
 crate::fixture_program! {
     pub struct AggCountString;
-    .decl person(c0: i32, c1: String, c2: i32)
-    .decl dept_info(c0: i32)
-    .decl dept_person(c0: i32, c1: String)
-    .decl dept_headcount(c0: i32, c1: i32)
+    relation person(i32, String, i32);
+    relation dept_info(i32);
+    relation dept_person(i32, String);
+    relation dept_headcount(i32, i32);
 
-    dept_person(dept, name) :- person(_, name, dept), dept_info(dept).
-    dept_headcount(dept, count(name)) :- dept_person(dept, name).
+    dept_person(dept, name) <-- person(_, name, dept), dept_info(dept);
+    dept_headcount(dept, *count as i32) <--
+        agg count = count(name) in dept_person(dept, name);
 }
 
 crate::fixture_io! {

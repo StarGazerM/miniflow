@@ -1,13 +1,13 @@
 crate::fixture_program! {
     pub struct NegStratified;
-    .decl person(c0: i32, c1: i32)
-    .decl high(c0: i32)
-    .decl low(c0: i32)
-    .decl confirmed_high(c0: i32)
+    relation person(i32, i32);
+    relation high(i32);
+    relation low(i32);
+    relation confirmed_high(i32);
 
-    high(id) :- person(id, score), *score >= 80.
-    low(id) :- person(id, _), !high(id).
-    confirmed_high(id) :- person(id, _), !low(id).
+    high(id) <-- person(id, score), if *score >= 80;
+    low(id) <-- person(id, _), !high(id);
+    confirmed_high(id) <-- person(id, _), !low(id);
 }
 
 crate::fixture_io! {

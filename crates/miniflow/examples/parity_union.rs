@@ -5,12 +5,12 @@ use miniflow::miniflow;
 
 miniflow! {
     struct Union;
-    .decl left(x: int32)
-    .decl right(x: int32)
-    .decl output(x: int32)
+    relation left(i32);
+    relation right(i32);
+    relation output(i32);
 
-    output(x) :- left(x).
-    output(x) :- right(x).
+    output(x) <-- left(x);
+    output(x) <-- right(x);
 }
 
 fn read_unary(path: &str) -> Result<Vec<(i32,)>, Box<dyn Error>> {

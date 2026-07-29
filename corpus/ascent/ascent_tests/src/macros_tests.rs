@@ -1,7 +1,7 @@
-use ascent_flow::ascent_flow;
+use miniflow::miniflow;
 use serde::{Deserialize, Serialize};
 
-ascent_flow! {
+miniflow! {
     struct MacroUnion;
     relation foo1(i32, i32);
     relation foo2(i32, i32);
@@ -31,7 +31,7 @@ enum Atomic {
     Variable(String),
 }
 
-ascent_flow! {
+miniflow! {
     struct AtomicMacro;
     relation sigma(String, isize);
     relation expression(Atomic);
@@ -48,7 +48,7 @@ ascent_flow! {
     pair(x, y) <-- value(x), value(y);
 }
 
-ascent_flow! {
+miniflow! {
     struct HeadAndBodyMacros;
     relation foo(i32, i32);
     relation reverse(i32, i32);
@@ -65,7 +65,7 @@ ascent_flow! {
     two_step(x, z) <-- foo(x, y), foo(y, z);
 }
 
-ascent_flow! {
+miniflow! {
     struct CompilerMacro;
     relation compiler(String, String, String);
     relation bad(String);
@@ -86,7 +86,7 @@ ascent_flow! {
         !bad(second_name);
 }
 
-ascent_flow! {
+miniflow! {
     struct PatternMacros;
     relation foo(i32, i32);
     relation bar(Option<i32>, i32);

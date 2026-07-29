@@ -7,7 +7,7 @@ mod canonical;
 mod codegen;
 mod flowlog_fp;
 mod hir;
-pub mod syntax;
+mod syntax;
 
 use proc_macro2::{Ident, Span, TokenStream};
 use syn::Result;
@@ -15,6 +15,15 @@ use syn::Result;
 pub use canonical::extract_dataflow_core;
 pub use hir::HirProgram;
 pub use syntax::Program;
+
+/// Parse and validate an embedded `MiniFlow` program.
+///
+/// # Errors
+///
+/// Returns a syntax error when the token stream is not a `MiniFlow` program.
+pub fn parse(tokens: TokenStream) -> Result<Program> {
+    syn::parse2(tokens)
+}
 
 /// Lower a parsed program into relation-identified HIR and dependency SCCs.
 ///
@@ -36,7 +45,8 @@ pub fn lower(program: Program) -> Result<HirProgram> {
 ///
 /// Returns any syntax or semantic error reported by the shared compiler
 /// stages.
-pub fn compile(program: Program) -> Result<TokenStream> {
+pub fn compile(tokens: TokenStream) -> Result<TokenStream> {
+    let program = parse(tokens)?;
     let hir = lower(program)?;
     hir.emit()
 }
@@ -50,7 +60,8 @@ pub fn compile(program: Program) -> Result<TokenStream> {
 ///
 /// Returns any syntax or semantic error reported by the shared compiler
 /// stages.
-pub fn compile_ascent_flow(program: Program) -> Result<TokenStream> {
+pub fn compile_ascent_flow(tokens: TokenStream) -> Result<TokenStream> {
+    let program = parse(tokens)?;
     let mut hir = lower(program)?;
     hir.runtime_crate = Ident::new("ascent_flow", Span::call_site());
     hir.emit()
@@ -62,8 +73,8 @@ pub fn compile_ascent_flow(program: Program) -> Result<TokenStream> {
 ///
 /// Returns any compiler diagnostic, or a Rust parse error if the emitter
 /// produces an invalid file.
-pub fn compile_canonical(program: Program) -> Result<String> {
-    let emitted = compile(program)?;
+pub fn compile_canonical(tokens: TokenStream) -> Result<String> {
+    let emitted = compile(tokens)?;
     let file: syn::File = syn::parse2(emitted)?;
     Ok(prettyplease::unparse(&file))
 }

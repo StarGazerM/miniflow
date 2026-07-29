@@ -1,10 +1,10 @@
 crate::fixture_program! {
     pub struct ProbeEdbIdbInline;
-    .decl bar(c0: i32)
-    .decl foo(c0: i32)
+    relation bar(i32);
+    relation foo(i32);
 
-    foo(1).
-    foo(x) :- bar(x).
+    foo(1);
+    foo(x) <-- bar(x);
 }
 
 crate::fixture_io! {

@@ -3,10 +3,10 @@ use std::path::Path;
 
 crate::fixture_program! {
     pub struct CompareExpr;
-    .decl data(c0: i32, c1: i32, c2: i32)
-    .decl out(c0: i32, c1: i32)
+    relation data(i32, i32, i32);
+    relation out(i32, i32);
 
-    out(id, a + b) :- data(id, a, b), *a + *b >= 100.
+    out(id, a + b) <-- data(id, a, b), if *a + *b >= 100;
 }
 
 pub fn run(fixture_dir: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {

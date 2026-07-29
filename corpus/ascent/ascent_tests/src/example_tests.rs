@@ -3,18 +3,18 @@
 use std::fmt::Debug;
 use std::hash::Hash;
 
-use ascent_flow::ascent_flow;
+use miniflow::miniflow;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-ascent_flow! {
+miniflow! {
     struct GeneratorsAndConditions;
     relation node(i32, Vec<i32>);
     relation edge(i32, i32);
     edge(x, y) <-- node(x, neighbors), for &y in neighbors.iter();
 }
 
-ascent_flow! {
+miniflow! {
     struct AverageGrade;
     relation student(u32);
     relation course_grade(u32, u32, u16);
@@ -24,7 +24,7 @@ ascent_flow! {
         agg grade = mean(value) in course_grade(student, _, value);
 }
 
-ascent_flow! {
+miniflow! {
     struct ReflexiveTc;
     relation edge(i32, i32);
     relation reflexive(bool);
@@ -34,7 +34,7 @@ ascent_flow! {
     tc(x, x), tc(y, y) <-- reflexive(true), edge(x, y);
 }
 
-ascent_flow! {
+miniflow! {
     struct GenericTc<N>
     where
         N: Clone
@@ -53,7 +53,7 @@ ascent_flow! {
     tc(x, z) <-- edge(x, y), tc(y, z);
 }
 
-ascent_flow! {
+miniflow! {
     struct GenericType<T>
     where
         T: Clone
@@ -69,7 +69,7 @@ ascent_flow! {
     relation dummy(T);
 }
 
-ascent_flow! {
+miniflow! {
     struct Ancestry;
     relation parent(String, String);
     relation ancestor(String, String);

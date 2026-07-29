@@ -4,16 +4,21 @@ use harness::*;
 
 miniflow::miniflow! {
     #![flowlog_batch]
+    #![output(cc)]
 
     struct Cc;
 
-    .decl arc(source: int32, target: int32)
-    .decl cc(node: int32, component: int32)
+    relation arc(i32, i32);
+    relation cc(i32, i32);
 
-    cc(node, min(node)) :- arc(node, _).
-    cc(node, min(current)) :- cc(other, current), arc(other, node).
+    // CC(node, min(node)) :- Arc(node, _).
+    cc(node, minimum) <--
+        agg minimum = min(*node) in arc(node, _);
 
-    .output cc
+    // CC(node, min(current)) :- Arc(other, node), CC(other, current).
+    cc(node, minimum) <--
+        cc(other, current),
+        agg minimum = min(*current) in arc(other, node);
 }
 
 fn main() {

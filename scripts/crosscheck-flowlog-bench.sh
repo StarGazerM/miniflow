@@ -2,10 +2,9 @@
 set -euo pipefail
 
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "${ROOT_DIR}/scripts/cargo-env.sh"
 readonly UPSTREAM="${FLOWLOG_BENCH_SOURCE:-"${ROOT_DIR}/flowlog-bench"}"
 readonly FLOWLOG_DIR="${ROOT_DIR}/flowlog"
-readonly FLOWLOG_COMPILER="${FLOWLOG_COMPILER:-"${CARGO_TARGET_DIR}/release/flowlog-compiler"}"
+readonly FLOWLOG_COMPILER="${FLOWLOG_COMPILER:-"${FLOWLOG_DIR}/target/release/flowlog-compiler"}"
 readonly FACT_DIR="${FACT_DIR:?set FACT_DIR to the populated flowlog-bench facts directory}"
 readonly WORKERS="${WORKERS:-1}"
 
@@ -58,7 +57,7 @@ for config in "${configs[@]}"; do
         )"
         semantic_source="${semantic_source:-${program}}"
         oracle_source="${UPSTREAM}/programs/oracle/flowlog/${semantic_source}/default.dl"
-        local_binary="${CARGO_TARGET_DIR}/release/${program}"
+        local_binary="${ROOT_DIR}/target/release/${program}"
         test -f "${oracle_source}"
         test -x "${local_binary}"
 
@@ -66,7 +65,7 @@ for config in "${configs[@]}"; do
         oracle_binary="${work_dir}/${pair}-flowlog"
         oracle_log="${work_dir}/${pair}-flowlog.log"
         local_log="${work_dir}/${pair}-miniflow.log"
-        env -u CARGO_TARGET_DIR "${FLOWLOG_COMPILER}" \
+        "${FLOWLOG_COMPILER}" \
             "${oracle_source}" \
             -F "${facts}" \
             -D - \

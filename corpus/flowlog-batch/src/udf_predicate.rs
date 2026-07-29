@@ -23,12 +23,12 @@ mod udf {
 
 crate::fixture_program! {
     pub struct UdfPredicate;
-    .decl data(c0: i32, c1: i32)
-    .decl prime_val(c0: i32, c1: i32)
-    .decl composite_val(c0: i32, c1: i32)
+    relation data(i32, i32);
+    relation prime_val(i32, i32);
+    relation composite_val(i32, i32);
 
-    prime_val(id, value) :- data(id, value), udf::is_prime(*value) = true.
-    composite_val(id, value) :- data(id, value), udf::is_prime(*value) = false.
+    prime_val(id, value) <-- data(id, value), if udf::is_prime(*value);
+    composite_val(id, value) <-- data(id, value), if !udf::is_prime(*value);
 }
 
 crate::fixture_io! {

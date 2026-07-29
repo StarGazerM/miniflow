@@ -4,7 +4,6 @@ set -euo pipefail
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly FLOWLOG_DIR="${ROOT_DIR}/flowlog"
 readonly EXPECTED_COMMIT="$(<"${ROOT_DIR}/parity/flowlog/UPSTREAM_COMMIT")"
-readonly EXPECTED_TAG="$(<"${ROOT_DIR}/parity/flowlog/UPSTREAM_TAG")"
 readonly EXPECTED_PATCH="${ROOT_DIR}/parity/flowlog/oracle.patch"
 readonly PATCHED_FILES=(
     "flowlog-build/src/codegen/flow/non_recursive.rs"
@@ -17,15 +16,6 @@ if [[ "${actual_commit}" != "${EXPECTED_COMMIT}" ]]; then
     echo "FlowLog oracle revision mismatch" >&2
     echo "expected: ${EXPECTED_COMMIT}" >&2
     echo "actual:   ${actual_commit}" >&2
-    exit 1
-fi
-
-tag_commit="$(git -C "${FLOWLOG_DIR}" rev-parse "${EXPECTED_TAG}^{}")"
-if [[ "${tag_commit}" != "${EXPECTED_COMMIT}" ]]; then
-    echo "FlowLog release tag does not resolve to the pinned revision" >&2
-    echo "tag:      ${EXPECTED_TAG}" >&2
-    echo "expected: ${EXPECTED_COMMIT}" >&2
-    echo "actual:   ${tag_commit}" >&2
     exit 1
 fi
 
@@ -43,5 +33,4 @@ for patched_file in "${PATCHED_FILES[@]}"; do
 done >"${work_dir}/expected.status"
 cmp "${work_dir}/expected.status" "${work_dir}/actual.status"
 
-printf 'FlowLog oracle %s and deterministic-order patch: passed\n' \
-    "${EXPECTED_TAG}"
+echo "FlowLog oracle revision and deterministic-order patch: passed"

@@ -1,20 +1,20 @@
 crate::fixture_program! {
     pub struct RuleNullary;
-    .decl score(c0: i32, c1: i32)
-    .decl has_outlier()
-    .decl capped(c0: i32, c1: i32)
-    .decl pass_through(c0: i32, c1: i32)
+    relation score(i32, i32);
+    relation has_outlier();
+    relation capped(i32, i32);
+    relation pass_through(i32, i32);
 
-    has_outlier() :- score(_, value), *value > 500.
-    capped(id, 100) :-
+    has_outlier() <-- score(_, value), if *value > 500;
+    capped(id, 100) <--
         score(id, value),
         has_outlier(),
-        *value > 100.
-    capped(id, value) :-
+        if *value > 100;
+    capped(id, value) <--
         score(id, value),
         has_outlier(),
-        *value <= 100.
-    pass_through(id, value) :- score(id, value), !has_outlier().
+        if *value <= 100;
+    pass_through(id, value) <-- score(id, value), !has_outlier();
 }
 
 crate::fixture_io! {

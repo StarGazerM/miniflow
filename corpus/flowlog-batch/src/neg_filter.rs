@@ -1,10 +1,10 @@
 crate::fixture_program! {
     pub struct NegFilter;
-    .decl person(c0: i32)
-    .decl blocked(c0: i32)
-    .decl active(c0: i32)
+    relation person(i32);
+    relation blocked(i32);
+    relation active(i32);
 
-    active(id) :- person(id), !blocked(id).
+    active(id) <-- person(id), !blocked(id);
 }
 
 crate::fixture_io! {

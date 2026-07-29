@@ -53,21 +53,9 @@ while IFS=$'\t' read -r fixture _family status; do
     [[ "${fixture}" == \#* || -z "${fixture}" ]] && continue
     test -f "${FIXTURES}/${fixture}/program.dl"
     if [[ "${status}" != "pending" ]]; then
-        counterpart="${CORPUS}/src/${fixture}.rs"
-        test -f "${counterpart}"
-        if ! grep -Eq '\.decl |binary_i32_filter_fixture!' "${counterpart}"; then
-            echo "fixture has no FlowLog-syntax declaration: ${counterpart}" >&2
-            exit 1
-        fi
+        test -f "${CORPUS}/src/${fixture}.rs"
     fi
 done <"${MANIFEST}"
-
-if rg -n \
-    '<--|^[[:space:]]*relation[[:space:]]|^[[:space:]]*agg[[:space:]]|,[[:space:]]*if[[:space:]]' \
-    "${CORPUS}/src" -g '*.rs'; then
-    echo "legacy Ascent syntax remains in the FlowLog batch corpus" >&2
-    exit 1
-fi
 
 while IFS=$'\t' read -r fixture reason; do
     [[ "${fixture}" == \#* || -z "${fixture}" ]] && continue

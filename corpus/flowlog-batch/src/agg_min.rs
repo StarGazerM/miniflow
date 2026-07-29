@@ -1,15 +1,16 @@
 crate::fixture_program! {
     pub struct AggMin;
-    .decl edge(c0: i32, c1: i32, c2: i32)
-    .decl node(c0: i32)
-    .decl valid_edge(c0: i32, c1: i32, c2: i32)
-    .decl min_weight(c0: i32, c1: i32)
+    relation edge(i32, i32, i32);
+    relation node(i32);
+    relation valid_edge(i32, i32, i32);
+    relation min_weight(i32, i32);
 
-    valid_edge(source, destination, weight) :-
+    valid_edge(source, destination, weight) <--
         edge(source, destination, weight),
         node(source),
-        node(destination).
-    min_weight(source_id, min(weight)) :- valid_edge(source_id, _, weight).
+        node(destination);
+    min_weight(source_id, minimum) <--
+        agg minimum = min(weight) in valid_edge(source_id, _, weight);
 }
 
 crate::fixture_io! {

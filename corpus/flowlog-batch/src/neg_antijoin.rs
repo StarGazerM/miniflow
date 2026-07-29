@@ -1,10 +1,10 @@
 crate::fixture_program! {
     pub struct NegAntijoin;
-    .decl assign(c0: i32, c1: i32)
-    .decl done(c0: i32, c1: i32)
-    .decl pending(c0: i32, c1: i32)
+    relation assign(i32, i32);
+    relation done(i32, i32);
+    relation pending(i32, i32);
 
-    pending(person, task) :- assign(person, task), !done(person, task).
+    pending(person, task) <-- assign(person, task), !done(person, task);
 }
 
 crate::fixture_io! {

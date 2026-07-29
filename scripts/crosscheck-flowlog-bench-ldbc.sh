@@ -2,10 +2,9 @@
 set -euo pipefail
 
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "${ROOT_DIR}/scripts/cargo-env.sh"
 readonly UPSTREAM="${FLOWLOG_BENCH_SOURCE:-"${ROOT_DIR}/flowlog-bench"}"
 readonly FLOWLOG_DIR="${ROOT_DIR}/flowlog"
-readonly FLOWLOG_COMPILER="${FLOWLOG_COMPILER:-"${CARGO_TARGET_DIR}/release/flowlog-compiler"}"
+readonly FLOWLOG_COMPILER="${FLOWLOG_COMPILER:-"${FLOWLOG_DIR}/target/release/flowlog-compiler"}"
 readonly FACT_DIR="${FACT_DIR:?set FACT_DIR to the populated LDBC dataset directory}"
 readonly CONFIG="${1:-"${UPSTREAM}/config/ldbc.txt"}"
 readonly WORKERS="${WORKERS:-1}"
@@ -61,7 +60,7 @@ while IFS=$'\t' read -r query dataset; do
         exit 1
     }
     oracle_source="${UPSTREAM}/programs/ldbc/flowlog/${query}.dl"
-    local_binary="${CARGO_TARGET_DIR}/release/${query}"
+    local_binary="${ROOT_DIR}/target/release/${query}"
     test -f "${oracle_source}"
     test -x "${local_binary}"
     parameter_file="$(
@@ -88,7 +87,7 @@ while IFS=$'\t' read -r query dataset; do
     fi
 
     oracle_binary="${query_work}/flowlog-program"
-    env -u CARGO_TARGET_DIR "${FLOWLOG_COMPILER}" \
+    "${FLOWLOG_COMPILER}" \
         "${oracle_source}" \
         -F "${facts_view}" \
         -D "${oracle_output}" \

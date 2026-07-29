@@ -1,11 +1,13 @@
 crate::fixture_program! {
     pub struct AggChained;
-    .decl sale(c0: i32, c1: i32)
-    .decl dept_total(c0: i32, c1: i32)
-    .decl max_dept_total(c0: i32)
+    relation sale(i32, i32);
+    relation dept_total(i32, i32);
+    relation max_dept_total(i32);
 
-    dept_total(dept_id, sum(amount)) :- sale(dept_id, amount).
-    max_dept_total(max(total)) :- dept_total(_, total).
+    dept_total(dept_id, total) <--
+        agg total = sum(amount) in sale(dept_id, amount);
+    max_dept_total(value) <--
+        agg value = max(total) in dept_total(_, total);
 }
 
 crate::fixture_io! {

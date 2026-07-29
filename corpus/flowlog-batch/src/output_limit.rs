@@ -3,10 +3,10 @@ use std::path::Path;
 
 crate::fixture_program! {
     pub struct OutputLimit;
-    .decl data(c0: String, c1: i32)
-    .decl top3(c0: String, c1: i32)
+    relation data(String, i32);
+    relation top3(String, i32);
 
-    top3(name, score) :- data(name, score).
+    top3(name, score) <-- data(name, score);
 }
 
 pub fn run(fixture_dir: &Path, output_dir: &Path) -> Result<(), Box<dyn Error>> {

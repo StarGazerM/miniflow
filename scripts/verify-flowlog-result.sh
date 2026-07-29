@@ -2,10 +2,9 @@
 set -euo pipefail
 
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "${ROOT_DIR}/scripts/cargo-env.sh"
 readonly FLOWLOG_DIR="${ROOT_DIR}/flowlog"
 readonly MANIFEST="${ROOT_DIR}/parity/flowlog/manifest.tsv"
-readonly COMPILER="${CARGO_TARGET_DIR}/debug/flowlog-compiler"
+readonly COMPILER="${FLOWLOG_DIR}/target/debug/flowlog-compiler"
 
 "${ROOT_DIR}/scripts/verify-flowlog-oracle.sh"
 
@@ -31,7 +30,7 @@ while IFS=$'\t' read -r fixture output_file _canonical_example runtime_example m
         echo "unknown FlowLog parity mode: ${mode}" >&2
         exit 1
     fi
-    env -u CARGO_TARGET_DIR "${COMPILER}" \
+    "${COMPILER}" \
         "${compiler_flags[@]}" \
         -D output \
         "${fixture_dir}/program.dl" \

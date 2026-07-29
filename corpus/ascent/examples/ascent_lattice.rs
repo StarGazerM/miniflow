@@ -2,18 +2,20 @@ use miniflow::miniflow;
 
 miniflow! {
     pub struct ShortestPath;
-    .decl edge(source: String, target: String, weight: u32)
-    .decl path(source: String, target: String, weight: u32)
-    .decl shortest_path(source: String, target: String, weight: u32)
+    relation edge(String, String, u32);
+    relation path(String, String, u32);
+    relation shortest_path(String, String, u32);
 
-    path(x, y, weight) :- edge(x, y, weight).
-    path(x, z, weight + suffix) :-
+    path(x, y, weight) <-- edge(x, y, weight);
+    path(x, z, weight + suffix) <--
         edge(x, y, weight),
-        path(y, z, suffix).
+        path(y, z, suffix);
 
     // Ascent's `Dual<u32>` lattice is the grouped minimum of the path
     // relation. DD performs the reduction; MiniFlow needs no lattice AST.
-    shortest_path(x, y, min(candidate)) :- path(x, y, _), path(x, y, candidate).
+    shortest_path(x, y, distance) <--
+        path(x, y, _),
+        agg distance = min(candidate) in path(x, y, candidate);
 }
 
 pub fn check() {

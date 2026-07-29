@@ -4,11 +4,11 @@ use miniflow::miniflow;
 
 miniflow! {
     pub struct MacroRule;
-    .decl unique(value: isize)
-    .decl shared(value: Arc<isize>)
+    relation unique(isize);
+    relation shared(Arc<isize>);
 
     // Ascent's source macro expands to this ordinary Datalog head.
-    shared(Arc::new(*x)) :- unique(x).
+    shared(Arc::new(*x)) <-- unique(x);
 }
 
 pub fn check() {

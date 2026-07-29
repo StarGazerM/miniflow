@@ -35,31 +35,31 @@ mod udf {
 
 crate::fixture_program! {
     pub struct UdfNested;
-    .decl sensor(c0: i32, c1: i32, c2: i32, c3: i32, c4: i32)
-    .decl depth2(c0: i32, c1: i32)
-    .decl depth3(c0: i32, c1: i32)
-    .decl wide(c0: i32, c1: i32)
-    .decl mixed(c0: i32, c1: i32)
-    .decl deep_wide(c0: i32, c1: i32)
+    relation sensor(i32, i32, i32, i32, i32);
+    relation depth2(i32, i32);
+    relation depth3(i32, i32);
+    relation wide(i32, i32);
+    relation mixed(i32, i32);
+    relation deep_wide(i32, i32);
 
-    depth2(id, udf::classify(udf::normalize(*reading1, *scale))) :-
-        sensor(id, reading1, scale, _, _).
-    depth3(id, udf::classify(udf::normalize(udf::clamp(*reading1, 50, 250), *scale))) :-
-        sensor(id, reading1, scale, _, _).
+    depth2(id, udf::classify(udf::normalize(*reading1, *scale))) <--
+        sensor(id, reading1, scale, _, _);
+    depth3(id, udf::classify(udf::normalize(udf::clamp(*reading1, 50, 250), *scale))) <--
+        sensor(id, reading1, scale, _, _);
     wide(id, udf::blend(
         udf::normalize(*reading1, *scale),
         udf::normalize(*reading2, *scale),
         *weight,
-    )) :- sensor(id, reading1, scale, weight, reading2).
+    )) <-- sensor(id, reading1, scale, weight, reading2);
     mixed(id, udf::abs_diff(
         udf::normalize(*reading1, *scale),
         udf::classify(udf::normalize(*reading2, *scale)),
-    )) :- sensor(id, reading1, scale, _, reading2).
+    )) <-- sensor(id, reading1, scale, _, reading2);
     deep_wide(id, udf::classify(udf::blend(
         udf::normalize(*reading1, *scale),
         udf::normalize(*reading2, *scale),
         *weight,
-    ))) :- sensor(id, reading1, scale, weight, reading2).
+    ))) <-- sensor(id, reading1, scale, weight, reading2);
 }
 
 crate::fixture_io! {

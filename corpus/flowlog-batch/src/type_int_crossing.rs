@@ -1,20 +1,20 @@
 crate::fixture_program! {
     pub struct TypeIntCrossing;
-    .decl a(c0: i8, c1: i8)
-    .decl b(c0: i8, c1: i16)
-    .decl c(c0: i8, c1: i32)
-    .decl ab(c0: i8, c1: i8, c2: i16)
-    .decl ac(c0: i8, c1: i8, c2: i32)
-    .decl abc(c0: i8, c1: i8, c2: i16, c3: i32)
-    .decl multi(c0: i8, c1: i32)
-    .decl with_const(c0: i8, c1: i16, c2: i32)
+    relation a(i8, i8);
+    relation b(i8, i16);
+    relation c(i8, i32);
+    relation ab(i8, i8, i16);
+    relation ac(i8, i8, i32);
+    relation abc(i8, i8, i16, i32);
+    relation multi(i8, i32);
+    relation with_const(i8, i16, i32);
 
-    ab(x, y, z) :- a(x, y), b(x, z).
-    ac(x, y, w) :- a(x, y), c(x, w).
-    abc(x, y, z, w) :- ab(x, y, z), c(x, w).
-    multi(x, w) :- c(x, w).
-    multi(x, w) :- ac(x, _, w).
-    with_const(x, 42_i16, 999_i32) :- a(x, _).
+    ab(x, y, z) <-- a(x, y), b(x, z);
+    ac(x, y, w) <-- a(x, y), c(x, w);
+    abc(x, y, z, w) <-- ab(x, y, z), c(x, w);
+    multi(x, w) <-- c(x, w);
+    multi(x, w) <-- ac(x, _, w);
+    with_const(x, 42_i16, 999_i32) <-- a(x, _);
 }
 
 crate::fixture_io! {

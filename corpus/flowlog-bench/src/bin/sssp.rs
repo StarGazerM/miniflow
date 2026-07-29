@@ -4,17 +4,22 @@ use harness::*;
 
 miniflow::miniflow! {
     #![flowlog_batch]
+    #![output(sssp)]
 
     struct Sssp;
 
-    .decl arc(source: int32, target: int32, weight: int32)
-    .decl id(node: int32)
-    .decl sssp(node: int32, distance: int32)
+    relation arc(i32, i32, i32);
+    relation id(i32);
+    relation sssp(i32, i32);
 
-    sssp(x, min(0)) :- id(x).
-    sssp(y, min(distance + weight)) :- sssp(x, distance), arc(x, y, weight).
+    // sssp(x, min(0)) :- id(x).
+    sssp(x, minimum) <--
+        agg minimum = min(0) in id(x);
 
-    .output sssp
+    // sssp(y, min(d1 + d2)) :- sssp(x, d1), arc(x, y, d2).
+    sssp(y, minimum) <--
+        sssp(x, distance),
+        agg minimum = min(*distance + *weight) in arc(x, y, weight);
 }
 
 fn main() {

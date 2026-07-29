@@ -1,9 +1,9 @@
 crate::fixture_program! {
     pub struct TypeInt;
-    .decl data(c0: i8, c1: i16, c2: i32, c3: i64)
-    .decl out(c0: i8, c1: i16, c2: i32, c3: i64)
+    relation data(i8, i16, i32, i64);
+    relation out(i8, i16, i32, i64);
 
-    out(a, b, c, d) :- data(a, b, c, d).
+    out(a, b, c, d) <-- data(a, b, c, d);
 }
 
 crate::fixture_io! {

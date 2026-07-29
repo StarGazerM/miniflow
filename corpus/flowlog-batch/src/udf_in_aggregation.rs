@@ -20,20 +20,26 @@ mod udf {
 
 crate::fixture_program! {
     pub struct UdfInAggregation;
-    .decl edge(c0: i32, c1: i32, c2: i32)
-    .decl total_bw(c0: i32, c1: i32)
-    .decl max_bw(c0: i32, c1: i32)
-    .decl min_bw(c0: i32, c1: i32)
-    .decl count_bw(c0: i32, c1: i32)
-    .decl by_tier(c0: i32, c1: i32)
-    .decl tier_cost(c0: i32, c1: i32)
+    relation edge(i32, i32, i32);
+    relation total_bw(i32, i32);
+    relation max_bw(i32, i32);
+    relation min_bw(i32, i32);
+    relation count_bw(i32, i32);
+    relation by_tier(i32, i32);
+    relation tier_cost(i32, i32);
 
-    total_bw(source_id, sum(udf::bw_cost(*weight))) :- edge(source_id, _, weight).
-    max_bw(source_id, max(udf::bw_cost(*weight))) :- edge(source_id, _, weight).
-    min_bw(source_id, min(udf::bw_cost(*weight))) :- edge(source_id, _, weight).
-    count_bw(source_id, count(udf::bw_cost(*weight))) :- edge(source_id, _, weight).
-    by_tier(udf::tier(*weight), max(weight)) :- edge(_, _, weight).
-    tier_cost(udf::tier(*weight), sum(udf::bw_cost(*weight))) :- edge(_, _, weight).
+    total_bw(source_id, total) <--
+        agg total = sum(udf::bw_cost(*weight)) in edge(source_id, _, weight);
+    max_bw(source_id, maximum) <--
+        agg maximum = max(udf::bw_cost(*weight)) in edge(source_id, _, weight);
+    min_bw(source_id, minimum) <--
+        agg minimum = min(udf::bw_cost(*weight)) in edge(source_id, _, weight);
+    count_bw(source_id, *count as i32) <--
+        agg count = count(udf::bw_cost(*weight)) in edge(source_id, _, weight);
+    by_tier(udf::tier(*weight), maximum) <--
+        agg maximum = max(weight) in edge(_, _, weight);
+    tier_cost(udf::tier(*weight), total) <--
+        agg total = sum(udf::bw_cost(*weight)) in edge(_, _, weight);
 }
 
 crate::fixture_io! {

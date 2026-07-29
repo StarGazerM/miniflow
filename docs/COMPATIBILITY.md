@@ -11,16 +11,18 @@ The compiler surface is embedded in Rust:
 ```rust,ignore
 miniflow! {
     pub struct Reach;
-    .decl source(id: int32)
-    .decl arc(source: int32, target: int32)
-    .decl reach(id: int32)
 
-    reach(x) :- source(x).
-    reach(y) :- reach(x), arc(x, y).
+    relation source(i32);
+    relation arc(i32, i32);
+    relation reach(i32);
+
+    reach(x) <-- source(x);
+    reach(y) <-- reach(x), arc(x, y);
 }
 ```
 
-The Ascent-shaped surface is exported independently by `ascent-flow`:
+The same existing surface is also exported under the more descriptive
+`ascent-flow` package:
 
 ```rust,ignore
 use ascent_flow::ascent_flow;
@@ -37,17 +39,16 @@ ascent_flow! {
 }
 ```
 
-`miniflow-syntax` and `ascent-flow-syntax` are separate parsers. Both produce
-the same frontend-neutral AST in `miniflow-core`; the HIR, SCC planner,
-optimizer, dataflow emitter, and `miniflow-runtime` are shared. The normal
-dependency graph of either public facade excludes the other parser and macro.
-Only the absolute runtime-facade path in emitted Rust differs after lowering.
+Both macros lower through `miniflow-core`; only the absolute runtime-facade
+path in emitted Rust differs. `miniflow!` remains source- and byte-compatible.
+The names therefore coexist without maintaining a second parser, HIR,
+optimizer, or dataflow emitter.
 
 Relation column types and expressions are Rust syntax trees. MiniFlow does not
 define an arithmetic AST, numeric coercions, casts, built-in string functions,
 or a second type checker.
 
-The shared compiler and evaluator contain:
+The embedded evaluator contains:
 
 - typed relation declarations;
 - facts and positive relational atoms;
@@ -55,27 +56,19 @@ The shared compiler and evaluator contain:
 - multiple rules per relation;
 - inferred dependency SCCs and recursive fixed points;
 - stratified negation;
+- Rust conditions, `if let`, `let`, and generators;
 - relational `count`, `min`, `max`, `sum`, and `mean` aggregates.
 
-The FlowLog frontend accepts `.decl`, facts, `:-`, comparison predicates,
-negated atoms, `.input`, `.output`, `.printsize`, and FlowLog head aggregates.
-`.input` is embedded-boundary metadata; host Rust supplies relation contents.
-`.output` and `.printsize` select emitted output relations without adding
-standalone file/CLI scaffolding.
-
-The Ascent frontend additionally recognizes its native body clauses:
-conditions, `if let`, `let`, generators, and body aggregates. These features
-cover the pinned Ascent test corpus. All retained examples and benchmarks use
-FlowLog-syntax `miniflow!`; syntax-specific compatibility tests use
-`ascent_flow!`. Lattice and source-macro examples have relational/Rust
-encodings rather than a copied Ascent macro-expansion language.
+These features are sufficient for the pinned Ascent corpus. Lattice and source
+macro examples have corresponding relational/Rust encodings; MiniFlow does
+not copy an independent Ascent macro-expansion language.
 
 The following FlowLog product features are outside the core:
 
 - incremental transactions, retractions, and epoch APIs;
 - explicit `loop`, `fixpoint`, and `.iterative` surface constructs;
 - `.comp`, `.init`, inheritance, and override;
-- standalone `.dl` I/O implementations and executable scaffolding;
+- standalone `.dl` I/O directives and executable scaffolding;
 - a Tokio executor.
 
 Tokio may later wrap a generated engine as an optional host integration, but
@@ -89,12 +82,11 @@ shared only at the embedded host boundary.
 
 ## One compiler path
 
-The frontend stacks join at one semantic compiler path:
+`miniflow-core` owns every semantic phase:
 
 ```text
-FlowLog tokens -> miniflow-syntax -----\
-                                        -> shared AST
-Ascent tokens  -> ascent-flow-syntax --/
+Rust tokens
+  -> syntax
   -> desugared relational program
   -> HIR
   -> dependency SCCs and strata
@@ -102,9 +94,8 @@ Ascent tokens  -> ascent-flow-syntax --/
   -> canonical Rust token stream
 ```
 
-Each proc macro calls its syntax crate and then this same compiler library.
-Expansion tests follow the production FlowLog parser and compiler path. There
-is no test-only renderer or separately maintained build-script compiler.
+The proc macro calls this library. Expansion tests call the same library.
+There is no test-only renderer or separately maintained build-script compiler.
 
 ## Exact expansion parity
 
@@ -126,7 +117,8 @@ pins these compiler shapes:
 Other MiniFlow programs still use the same HIR, SCC scheduler, and DD emitter,
 and are covered by result tests. They are not claimed byte-identical to
 arbitrary FlowLog programs until a manifest fixture extends the overlap
-contract.
+matrix.
+
 The live FlowLog batch corpus has a second, exhaustive matrix at
 [`corpus/flowlog-batch/manifest.tsv`](../corpus/flowlog-batch/manifest.tsv).
 It accounts for every directory currently present under
@@ -170,17 +162,14 @@ Any intentional code-generation change requires changing the pinned oracle
 revision or the compatibility contract. It cannot be accepted by refreshing a
 golden file.
 
-The oracle is pinned to the `flowlog-compiler-v0.5.0` release tag in
-[`parity/flowlog/UPSTREAM_TAG`](../parity/flowlog/UPSTREAM_TAG) and its exact
-commit in
-[`parity/flowlog/UPSTREAM_COMMIT`](../parity/flowlog/UPSTREAM_COMMIT). The
-verifier proves that the tag resolves to the commit. One audited patch gives
-statement-producing planner structures canonical fingerprint order:
-transformation dependencies, per-IDB unions, recursive metadata and enters,
-and feedback assignments. Without it, FlowLog can emit byte-distinct
-statement orders from the same input in separate processes. The verifier
-checks the exact patch bytes and rejects every other dirty or untracked oracle
-file.
+The oracle is pinned to the commit in
+[`parity/flowlog/UPSTREAM_COMMIT`](../parity/flowlog/UPSTREAM_COMMIT). One
+audited patch gives statement-producing planner structures canonical
+fingerprint order: transformation dependencies, per-IDB unions, recursive
+metadata and enters, and feedback assignments. Without it, FlowLog can emit
+byte-distinct statement orders from the same input in separate processes. The
+verifier checks the exact patch bytes and rejects every other dirty or
+untracked oracle file.
 
 The generated input declarations, logical dataflow body, recursive scopes,
 arrangements, thresholds, and any in-dataflow profiling operators are inside
@@ -223,14 +212,11 @@ Its executable matrix contains:
 - 55 `default.txt`, 20 `doop_intensive.txt`, 8 `joinorder.txt`, and 2
   `ldbc.txt` active rows.
 
-All 22 local executables are direct FlowLog-syntax `miniflow!` programs with
-checked-in `.decl`, `:-`, and `.output` forms. No local executable invokes
-`ascent_par!` or textually includes an upstream macro body.
-`scripts/import-flowlog-bench.py --check` deterministically regenerates 18
-translations from the pinned upstream Ascent programs and rejects drift. The
-four handwritten semantic translations are recursive-min `cc`/`sssp` and
-LDBC Q2/Q13. Four-worker row-level tests cover those exceptional
-translations, including reachable and unreachable Q13 results.
+For ordinary programs, the local wrapper passes the upstream
+`ascent_par!` body unchanged to the MiniFlow proc macro. The only handwritten
+semantic translations are recursive-min `cc`/`sssp` and LDBC Q2/Q13.
+Four-worker row-level tests cover those exceptional translations, including
+reachable and unreachable Q13 results.
 
 Join-order files are generated plans rather than distinct Datalog
 denotations. The inventory gate compares each program's `.dl` files against
@@ -265,24 +251,6 @@ The attribute controls generated Timely/Differential instrumentation. It does
 not select a second emitter. Profile-disabled and profile-enabled expansions
 both have exact oracle fixtures.
 
-## Build policy
-
-Release builds use the same `opt-level = 2` and `panic = "abort"` policy
-emitted by FlowLog compiler 0.5.0. Unlike FlowLog's explicitly retained build
-directories, MiniFlow keeps incremental compilation disabled in development,
-test, and release profiles.
-
-Repository Cargo commands place ordinary artifacts in
-`/tmp/miniflow-target`; workspace rust-analyzer checks use
-`/tmp/miniflow-rust-analyzer-target`. Verification overrides this with a fresh
-temporary target and deletes it on exit. Generated standalone FlowLog crates
-retain their own temporary targets because the FlowLog compiler locates the
-resulting executable there; each surrounding parity script deletes that
-build directory on exit.
-
-`scripts/clean-build-artifacts.sh` removes both disposable targets plus legacy
-`target` directories inside the checkout.
-
 ## One non-negotiable verification command
 
 ```text
@@ -290,11 +258,10 @@ scripts/verify.sh
 ```
 
 This checks formatting, all workspace tests, clippy with warnings denied, the
-live pinned Ascent and `flowlog-bench` inventories, FlowLog spelling for every
-`miniflow!` source, dependency isolation of the two frontends, all 97 live
-FlowLog batch fixture counterparts, all local benchmark contract tests, the
-source size budget, runtime and profiler parity, two-build FlowLog
-determinism, and canonical generated-Rust byte equality. There is no
-snapshot-update mode and no accepted pending fixture. Full real-dataset
-benchmark crosschecks use the two explicit commands above because the
-upstream datasets are not stored in this repository.
+live pinned Ascent and `flowlog-bench` inventories, all 97 live FlowLog batch
+fixture counterparts, all local benchmark contract tests, the source size
+budget, runtime and profiler parity, two-build FlowLog determinism, and
+canonical generated-Rust byte equality. There is no snapshot-update mode and
+no accepted pending fixture. Full real-dataset benchmark crosschecks use the
+two explicit commands above because the upstream datasets are not stored in
+this repository.

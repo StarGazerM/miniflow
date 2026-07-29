@@ -19,32 +19,33 @@ fn nil() -> Arc<List<char>> {
 
 miniflow! {
     pub struct RecursiveLists;
-    .decl character(value: char)
-    .decl list(value: Arc<List<char>>)
-    .decl len(value: Arc<List<char>>, length: usize)
-    .decl res(value: String)
+    relation character(char);
+    relation list(Arc<List<char>>);
+    relation len(Arc<List<char>>, usize);
+    relation res(String);
 
-    list(nil()).
-    len(nil(), 0).
+    list(nil());
+    len(nil(), 0);
 
-    list(cons(*character, tail.clone())) :-
+    list(cons(*character, tail.clone())) <--
         character(character),
         list(tail),
         len(tail, length),
-        *length < 5 .
+        if *length < 5;
 
-    len(cons(*character, tail.clone()), length + 1) :-
+    len(list_value, length + 1) <--
         character(character),
         len(tail, length),
-        list(cons(*character, tail.clone())).
+        let list_value = cons(*character, tail.clone()),
+        list(list_value);
 
-    res("-".to_owned()) :- list(nil()).
-    res("a".to_owned()) :- list(cons('a', nil())).
-    res("b".to_owned()) :- list(cons('b', nil())).
-    res("c".to_owned()) :- list(cons('c', nil())).
-    res("ab".to_owned()) :- list(cons('a', cons('b', nil()))).
-    res("aba".to_owned()) :- list(cons('a', cons('b', cons('a', nil())))).
-    res("abc".to_owned()) :- list(cons('a', cons('b', cons('c', nil())))).
+    res("-".to_owned()) <-- list(nil());
+    res("a".to_owned()) <-- list(cons('a', nil()));
+    res("b".to_owned()) <-- list(cons('b', nil()));
+    res("c".to_owned()) <-- list(cons('c', nil()));
+    res("ab".to_owned()) <-- list(cons('a', cons('b', nil())));
+    res("aba".to_owned()) <-- list(cons('a', cons('b', cons('a', nil()))));
+    res("abc".to_owned()) <-- list(cons('a', cons('b', cons('c', nil()))));
 }
 
 pub fn check() {

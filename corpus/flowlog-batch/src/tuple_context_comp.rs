@@ -1,15 +1,15 @@
 crate::fixture_program! {
     pub struct TupleContextComp;
-    .decl call(c0: String, c1: String, c2: String)
-    .decl out(c0: (String, String), c1: String)
-    .decl same_ctx(c0: String, c1: String)
-    .decl a__reaches(c0: (String, String), c1: String)
-    .decl a__samectx(c0: String, c1: String)
+    relation call(String, String, String);
+    relation out((String, String), String);
+    relation same_ctx(String, String);
+    relation a__reaches((String, String), String);
+    relation a__samectx(String, String);
 
-    a__reaches((caller, site), callee) :- call(caller, callee, site).
-    a__samectx(a, b) :- a__reaches(context, a), a__reaches(context, b).
-    out(context, callee) :- a__reaches(context, callee).
-    same_ctx(a, b) :- a__samectx(a, b).
+    a__reaches((caller, site), callee) <-- call(caller, callee, site);
+    a__samectx(a, b) <-- a__reaches(context, a), a__reaches(context, b);
+    out(context, callee) <-- a__reaches(context, callee);
+    same_ctx(a, b) <-- a__samectx(a, b);
 }
 
 crate::fixture_io! {

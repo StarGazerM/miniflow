@@ -1,44 +1,55 @@
-# MiniFlow
+# MiniFlow and AscentFlow
 
-MiniFlow is embedded batch Datalog for Rust. It compiles declarative rules to
-Timely and Differential Dataflow through a shared relational compiler core.
+MiniFlow is a clean batch-Datalog core derived from the semantics of FlowLog
+and the embedded compiler shape of Ascent.
 
-The workspace provides two independent frontends:
+The implementation has four production crates:
 
-- **MiniFlow** uses FlowLog-style declarations and rules: `.decl`, `:-`,
-  `.output`, and head aggregates.
-- **AscentFlow** uses Ascent-style syntax: `relation`, `<--`, and
-  body-clause expressions.
+- `miniflow-core`: syntax, relational HIR, dependency SCCs, planning, and
+  canonical Rust emission.
+- `miniflow-macro`: a procedural-macro shell around `miniflow-core`.
+- `miniflow`: the public macro and runtime facade.
+- `ascent-flow`: the Ascent-named public facade over the same compiler and
+  runtime.
 
-Both frontends lower to the same frontend-neutral AST, relational HIR, SCC
-planner, and canonical dataflow emitter. Their normal dependency graphs remain
-isolated; neither public frontend depends on the other.
+`miniflow!` and `ascent_flow!` currently accept the same embedded,
+Ascent-shaped rule syntax. They do not fork the compiler: the selected public
+crate path is the only expansion difference. This keeps `miniflow` available
+while making the existing surface accurately available as `ascent-flow`; a
+future FlowLog-shaped MiniFlow parser can lower into the same HIR.
 
-## Quick start
+```rust
+use ascent_flow::ascent_flow;
 
-MiniFlow requires a Rust toolchain with Edition 2024 support.
+ascent_flow! {
+    struct Reach;
 
-```console
-git clone https://github.com/StarGazerM/miniflow.git
-cd miniflow
-cargo test --workspace
+    relation source(i32);
+    relation arc(i32, i32);
+    relation reach(i32);
+
+    reach(x) <-- source(x);
+    reach(y) <-- reach(x), arc(x, y);
+}
 ```
 
+## Usage
+
 Declare relations and rules with `miniflow!`, initialize the input relation
-fields, and call `run`. Derived relations are written back to their fields.
+fields, and call `run`. Derived relations are written back to their fields:
 
 ```rust
 use miniflow::miniflow;
 
 miniflow! {
-    pub struct Reach;
+    struct Reach;
 
-    .decl source(id: int32)
-    .decl arc(source: int32, target: int32)
-    .decl reach(id: int32)
+    relation source(i32);
+    relation arc(i32, i32);
+    relation reach(i32);
 
-    reach(x) :- source(x).
-    reach(y) :- reach(x), arc(x, y).
+    reach(x) <-- source(x);
+    reach(y) <-- reach(x), arc(x, y);
 }
 
 fn main() {
@@ -53,119 +64,121 @@ fn main() {
 }
 ```
 
-Run the checked-in CSV-backed example:
+The checked-in CSV-backed version can be run directly:
 
 ```console
-cd parity/flowlog/reach
-cargo run --quiet -p miniflow --example parity_reach
-```
-
-It prints:
-
-```text
+$ (cd parity/flowlog/reach && cargo run --quiet -p miniflow --example parity_reach)
 1
 2
 3
 ```
 
-## Ascent-style frontend
+## The same dataflow as FlowLog
 
-AscentFlow provides the same compiler and runtime behind an independent
-Ascent-shaped syntax frontend.
+The MiniFlow rules above correspond to this FlowLog program:
 
-```rust
-use ascent_flow::ascent_flow;
+```datalog
+.decl Source(id: int32)
+.input Source(IO="file", filename="Source.csv", delimiter=",")
+.decl Arc(x: int32, y: int32)
+.input Arc(IO="file", filename="Arc.csv", delimiter=",")
 
-ascent_flow! {
-    pub struct Reach;
-
-    relation source(i32);
-    relation arc(i32, i32);
-    relation reach(i32);
-
-    reach(x) <-- source(x);
-    reach(y) <-- reach(x), arc(x, y);
-}
+.decl Reach(id: int32)
+Reach(y) :- Source(y).
+Reach(y) :- Reach(x), Arc(x,y).
+.output Reach
 ```
 
-## Architecture
+The two front ends have different host shells: FlowLog generates a standalone
+CSV-driven executable, while MiniFlow generates an embedded Rust type.
+Inside that shell, both compile the reachability rules to the same Timely and
+Differential Dataflow program:
 
-| Layer | Crates | Responsibility |
-| --- | --- | --- |
-| MiniFlow frontend | `miniflow`, `miniflow-macro`, `miniflow-syntax` | FlowLog-style embedded syntax |
-| AscentFlow frontend | `ascent-flow`, `ascent-flow-macro`, `ascent-flow-syntax` | Ascent-style embedded syntax |
-| Compiler | `miniflow-core` | AST, relational HIR, SCC planning, and Rust emission |
-| Runtime | `miniflow-runtime` | Timely and Differential Dataflow execution |
+```text
+MiniFlow Rust tokens -> MiniFlow HIR and SCC plan --+
+                                                     +-> identical canonical
+FlowLog .dl         -> FlowLog batch compiler -------+   dataflow closure
+```
 
-The compiler intentionally focuses on an embedded batch-Datalog core. It does
-not provide incremental transactions, a standalone CLI, a Tokio executor, or a
-separate arithmetic and typechecking language.
+This is byte equality, not just equivalent output. The parity check extracts
+the unique generated `dataflow` closure from each compiler, removes only the
+host-specific output sink and FlowLog's returned input handles, formats both
+with the same Rust syntax pipeline, and compares the resulting bytes. Input
+collections, joins, arrangements, recursive variables, thresholds, and
+profiling operators remain in the comparison.
 
-## Compatibility
+Run the proof against the pinned FlowLog compiler:
 
-MiniFlow checks two compatibility boundaries:
+```console
+$ scripts/verify-flowlog-expansion.sh
+FlowLog/MiniFlow canonical dataflow-core parity: all fixtures passed
+```
 
-1. Programs in the supported FlowLog overlap must produce identical canonical
-   dataflow and results.
-2. Every tracked Ascent test, example, and benchmark must have a MiniFlow
-   counterpart.
+That command checks reachability and every other strict fixture in
+[`parity/flowlog/manifest.tsv`](parity/flowlog/manifest.tsv). Result parity is
+checked independently by `scripts/verify-flowlog-result.sh`.
 
-The FlowLog oracle is pinned to `flowlog-compiler-v0.5.0` at commit
-`6c111b729e4bf8bffb5037b85b894031786140cc`. The `flowlog-bench` inventory is
-pinned separately at commit
-`2db7c2eab9f64852242a1691b51707f3fb3454ff`.
+There is deliberately no independent arithmetic language, I/O language,
+transaction engine, incremental mode, component system, CLI, or Tokio
+executor in the core. Rust provides types, expressions, functions, modules,
+and program lifecycle. Timely and Differential Dataflow provide the batch
+dataflow runtime.
 
-See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the supported language
-surface, parity contract, and benchmark accounting.
+Correctness has two independent gates:
 
-### Source footprint
+1. Every program in the declared FlowLog/MiniFlow overlap matrix must produce
+   byte-identical canonical generated Rust and identical relation output.
+2. Every tracked Ascent test, example, and benchmark program must have a
+   corresponding MiniFlow program. A corpus-coverage test rejects missing or
+   silently ignored upstream files.
 
-The size gate compares production Rust only, excluding tests, examples, and
-benchmark corpora.
+The pinned
+[`flowlog-rs/flowlog-bench`](https://github.com/flowlog-rs/flowlog-bench)
+suite is available as 22 executable programs under
+[`corpus/flowlog-bench`](corpus/flowlog-bench):
+
+- 19 canonical FlowLog programs;
+- the configured `borrow` alias, whose upstream Ascent body is identical to
+  `polonius_int`;
+- both active LDBC programs.
+
+Eighteen wrappers compile the upstream Ascent rule tokens directly through
+`miniflow!`. `cc`, `sssp`, and the two LDBC queries are explicit embedded
+translations because they use recursive minima or have no upstream Ascent
+crate. `WORKERS=N` controls both fact ingestion and Timely/DD workers.
+
+The inventory gate also checks all 85 active configuration rows and proves
+that every one of the 878 generated `.dl` files is a pure body-atom
+permutation of its canonical program. Generated join-order variants are
+therefore accounted as plans, not duplicated as 878 hand-maintained semantic
+programs.
+
+The production comparison uses Tokei's `Total` row over Rust source
+directories only; tests, examples, and both benchmark corpora are excluded.
 
 <!-- BEGIN TOKEI COMPARISON -->
 | Production Rust | Files | Lines | Code | Comments | Blanks |
 |---|---:|---:|---:|---:|---:|
-| MiniFlow + AscentFlow | 16 | 6905 | 6446 | 105 | 354 |
+| MiniFlow + AscentFlow | 12 | 6485 | 6091 | 88 | 306 |
 | FlowLog batch stack | 151 | 39910 | 29303 | 6402 | 4205 |
 <!-- END TOKEI COMPARISON -->
 
-## Verification
+MiniFlow plus AscentFlow is 16.2% of the FlowLog stack by total source lines
+and 20.8% by Tokei code lines. Equivalently, FlowLog contains about 4.8 times
+as much production code. `scripts/verify-size.sh` runs Tokei, enforces both
+size bounds, and rejects a stale README table.
 
-The standard workspace checks do not require the upstream oracle checkouts:
+See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the exact contract.
 
-```console
-cargo fmt --all -- --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+Useful benchmark checks:
+
+```sh
+scripts/verify-flowlog-bench-inventory.sh
+cargo test -p miniflow-flowlog-bench-corpus --test contracts
+
+# Full configured-pair checks require the upstream datasets.
+FACT_DIR=/path/to/flowlog-bench/facts \
+  scripts/crosscheck-flowlog-bench.sh
+FACT_DIR=/path/to/ldbc/facts \
+  scripts/crosscheck-flowlog-bench-ldbc.sh
 ```
-
-The complete parity gate uses local, pinned FlowLog and `flowlog-bench`
-checkouts. Prepare them once:
-
-```console
-git clone https://github.com/flowlog-rs/flowlog.git flowlog
-git -C flowlog checkout 6c111b729e4bf8bffb5037b85b894031786140cc
-git -C flowlog apply ../parity/flowlog/oracle.patch
-
-git clone https://github.com/flowlog-rs/flowlog-bench.git flowlog-bench
-git -C flowlog-bench checkout 2db7c2eab9f64852242a1691b51707f3fb3454ff
-
-scripts/verify.sh
-```
-
-The complete gate checks formatting, tests, Clippy, frontend isolation,
-inventory completeness, result parity, canonical expansion parity, and the
-production source-size bound. Cargo artifacts are redirected outside the
-checkout and the complete gate uses a disposable target directory.
-
-Dataset-backed benchmark comparisons are available separately:
-
-```console
-FACT_DIR=/path/to/flowlog-bench/facts scripts/crosscheck-flowlog-bench.sh
-FACT_DIR=/path/to/ldbc/facts scripts/crosscheck-flowlog-bench-ldbc.sh
-```
-
-## License
-
-MiniFlow is licensed under the [Apache License 2.0](LICENSE).

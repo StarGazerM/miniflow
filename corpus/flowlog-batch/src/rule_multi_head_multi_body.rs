@@ -1,14 +1,14 @@
 crate::fixture_program! {
     pub struct RuleMultiHeadMultiBody;
-    .decl a(c0: i32)
-    .decl b(c0: i32)
-    .decl c(c0: i32)
-    .decl d(c0: i32)
+    relation a(i32);
+    relation b(i32);
+    relation c(i32);
+    relation d(i32);
 
-    c(x) :- b(x).
-    c(x) :- a(x).
-    d(x) :- b(x).
-    d(x) :- a(x).
+    c(x) <-- b(x);
+    c(x) <-- a(x);
+    d(x) <-- b(x);
+    d(x) <-- a(x);
 }
 
 crate::fixture_io! {
