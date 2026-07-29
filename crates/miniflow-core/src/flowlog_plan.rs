@@ -56,6 +56,9 @@ pub const TUPLE_EQUIJOIN: OperatorKey = OperatorKey::new("miniflow.flowlog.tuple
 /// Resolved relation input consumed by a FlowLog-compatible physical operator.
 pub const RELATION_INPUT: OperatorKey = OperatorKey::new("miniflow.flowlog.relation-input");
 
+/// FlowLog-compatible arranged binary join.
+pub const BINARY_JOIN: OperatorKey = OperatorKey::new("miniflow.flowlog.binary-join");
+
 /// Physical facts needed to render one FlowLog-compatible unary rule.
 #[derive(Clone)]
 pub struct SingleAtomPlan {
@@ -448,9 +451,56 @@ impl TupleEquijoinPlan {
     }
 }
 
+/// One arranged input of a FlowLog-compatible join.
+#[derive(Clone)]
+pub struct JoinSidePlan {
+    /// Source atom after deterministic side ordering.
+    pub atom: Atom,
+    /// Resolved source relation.
+    pub relation: Relation,
+    /// Optional variable name in each source column.
+    pub variables: Vec<Option<String>>,
+    /// Source columns projected into the arrangement key.
+    pub keys: Vec<usize>,
+    /// Source columns projected into the arrangement value.
+    pub values: Vec<usize>,
+    /// Variable-to-column bindings used by residual expressions.
+    pub bindings: BTreeMap<String, usize>,
+    /// Predicates evaluated before arranging this input.
+    pub conditions: Vec<syn::ExprBinary>,
+    /// Whether the source collection can be arranged without projection.
+    pub alias: bool,
+    /// FlowLog-compatible input transformation fingerprint.
+    pub fingerprint: u64,
+}
+
+/// Physical facts needed to render a FlowLog-compatible binary join.
+#[derive(Clone)]
+pub struct BinaryJoinPlan {
+    /// Physical operator node described by these facts.
+    pub node: NodeId,
+    /// Rule head produced by the join.
+    pub head: Atom,
+    /// Resolved output relation.
+    pub target_relation: Relation,
+    /// Deterministically ordered left input.
+    pub left: JoinSidePlan,
+    /// Deterministically ordered right input.
+    pub right: JoinSidePlan,
+    /// Join-key variables in key-column order.
+    pub shared: Vec<String>,
+    /// Predicates evaluated after joining.
+    pub join_conditions: Vec<syn::ExprBinary>,
+    /// FlowLog-compatible join transformation fingerprint.
+    pub join_fingerprint: u64,
+    /// Whether rendering must merge with an existing target collection.
+    pub target_initialized: bool,
+}
+
 pub(crate) fn install(registry: &mut Registry) {
     registry.around::<PlanRule, _>(|context, request, next| {
-        if let Some(plan) = plan_tuple_equijoin(&request)
+        if let Some(plan) = plan_binary_join(&request)
+            .or_else(|| plan_tuple_equijoin(&request))
             .or_else(|| plan_unary_antijoin(&request))
             .or_else(|| plan_direct_aggregate(&request))
             .or_else(|| plan_single_atom(&request))
@@ -998,6 +1048,342 @@ fn plan_tuple_equijoin(request: &RuleRequest) -> Option<RulePlan> {
         join_fingerprint,
     });
     Some(RulePlan::from_graph(graph, node))
+}
+
+#[allow(clippy::too_many_lines)]
+fn plan_binary_join(request: &RuleRequest) -> Option<RulePlan> {
+    if request.recursive() {
+        return None;
+    }
+    let rule = request.rule();
+    let [head] = rule.heads.as_slice() else {
+        return None;
+    };
+    let [BodyItem::Atom(left), BodyItem::Atom(right), tail @ ..] = rule.body.as_slice() else {
+        return None;
+    };
+    let conditions = tail
+        .iter()
+        .map(|item| match item {
+            BodyItem::Condition(Expr::Binary(condition)) => Some(condition.clone()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if !request.initialized().contains(&left.relation)
+        || !request.initialized().contains(&right.relation)
+    {
+        return None;
+    }
+
+    let mut left_variables = atom_variables(left)?;
+    let mut right_variables = atom_variables(right)?;
+    let head_variables = head
+        .arguments
+        .iter()
+        .flat_map(crate::flowlog_analysis::expression_variables)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut left_names = variable_set(&left_variables);
+    let mut right_names = variable_set(&right_variables);
+    let cross_variables = conditions
+        .iter()
+        .filter_map(|condition| {
+            let used = crate::flowlog_analysis::binary_expression_variables(condition)
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            (!used.is_subset(&left_names) && !used.is_subset(&right_names)).then_some(used)
+        })
+        .flatten()
+        .collect::<std::collections::BTreeSet<_>>();
+    let live_variables = head_variables
+        .union(&cross_variables)
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let payload_width = |names: &[Option<String>], other: &[Option<String>]| {
+        names
+            .iter()
+            .flatten()
+            .filter(|name| {
+                !other.iter().flatten().any(|candidate| candidate == *name)
+                    && live_variables.contains(*name)
+            })
+            .count()
+    };
+    let (left, right) = if payload_width(&left_variables, &right_variables) > 0
+        && payload_width(&right_variables, &left_variables) == 0
+    {
+        std::mem::swap(&mut left_variables, &mut right_variables);
+        std::mem::swap(&mut left_names, &mut right_names);
+        (right, left)
+    } else {
+        (left, right)
+    };
+    let shared = left_variables
+        .iter()
+        .flatten()
+        .filter(|name| {
+            right_variables
+                .iter()
+                .flatten()
+                .any(|right_name| right_name == *name)
+        })
+        .cloned()
+        .unique()
+        .collect_vec();
+    if shared.is_empty() && !left.arguments.is_empty() && !right.arguments.is_empty() {
+        return None;
+    }
+    let right_is_left =
+        right.relation == left.relation && right_variables.as_slice() == left_variables.as_slice();
+    let left_side = plan_join_side(
+        request,
+        left,
+        left_variables,
+        &left_names,
+        &right_names,
+        &shared,
+        &live_variables,
+        &conditions,
+        true,
+    )?;
+    let right_side = plan_join_side(
+        request,
+        right,
+        right_variables,
+        &right_names,
+        &left_names,
+        &shared,
+        &live_variables,
+        &conditions,
+        right_is_left,
+    )?;
+    let target_relation = request.catalog().relation(head.relation);
+    let locate = |name: &str| join_argument(name, &shared, &left_side, &right_side);
+    let outputs = head
+        .arguments
+        .iter()
+        .zip(&target_relation.columns)
+        .map(|(expression, data_type)| {
+            crate::flowlog_analysis::flowlog_arithmetic_with(expression, &locate, data_type)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let join_conditions = conditions
+        .iter()
+        .filter(|condition| {
+            let used = crate::flowlog_analysis::binary_expression_variables(condition)
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            !used.is_subset(&left_names) && !used.is_subset(&right_names)
+        })
+        .cloned()
+        .collect_vec();
+    let variable_type = |name: &str| {
+        left_side
+            .variables
+            .iter()
+            .position(|candidate| candidate.as_deref() == Some(name))
+            .map(|index| &left_side.relation.columns[index])
+            .or_else(|| {
+                right_side
+                    .variables
+                    .iter()
+                    .position(|candidate| candidate.as_deref() == Some(name))
+                    .map(|index| &right_side.relation.columns[index])
+            })
+    };
+    let join_comparisons = join_conditions
+        .iter()
+        .map(|comparison| {
+            let data_type = crate::flowlog_analysis::expression_variables(&comparison.left)
+                .into_iter()
+                .find_map(|name| variable_type(&name))
+                .or_else(|| {
+                    crate::flowlog_analysis::expression_variables(&comparison.right)
+                        .into_iter()
+                        .find_map(|name| variable_type(&name))
+                })?;
+            Some(flowlog_fp::ComparisonExprArgument {
+                left: crate::flowlog_analysis::flowlog_arithmetic_with(
+                    &comparison.left,
+                    &locate,
+                    data_type,
+                )?,
+                operator: flowlog_comparison_operator(&comparison.op)?,
+                right: crate::flowlog_analysis::flowlog_arithmetic_with(
+                    &comparison.right,
+                    &locate,
+                    data_type,
+                )?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let join_fingerprint = flowlog_fp::join_expressions(
+        "jn_to_row",
+        left_side.fingerprint,
+        right_side.fingerprint,
+        Vec::new(),
+        outputs,
+        join_comparisons,
+    );
+    let mut graph = Plan::default();
+    let left_input = graph.add_node(RELATION_INPUT, []);
+    let right_input = graph.add_node(RELATION_INPUT, []);
+    let node = graph.add_node(BINARY_JOIN, [left_input, right_input]);
+    graph.facts_mut().insert(BinaryJoinPlan {
+        node,
+        head: head.clone(),
+        target_relation: target_relation.clone(),
+        left: left_side,
+        right: right_side,
+        shared,
+        join_conditions,
+        join_fingerprint,
+        target_initialized: request.initialized().contains(&head.relation),
+    });
+    Some(RulePlan::from_graph(graph, node))
+}
+
+fn atom_variables(atom: &Atom) -> Option<Vec<Option<String>>> {
+    atom.arguments
+        .iter()
+        .map(|argument| {
+            if matches!(argument, Expr::Infer(_)) {
+                Some(None)
+            } else {
+                variable_name(argument).map(Some)
+            }
+        })
+        .collect()
+}
+
+fn variable_set(variables: &[Option<String>]) -> std::collections::BTreeSet<String> {
+    variables.iter().flatten().cloned().collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_join_side(
+    request: &RuleRequest,
+    atom: &Atom,
+    variables: Vec<Option<String>>,
+    own_names: &std::collections::BTreeSet<String>,
+    other_names: &std::collections::BTreeSet<String>,
+    shared: &[String],
+    live_variables: &std::collections::BTreeSet<String>,
+    conditions: &[syn::ExprBinary],
+    is_left: bool,
+) -> Option<JoinSidePlan> {
+    let relation = request.catalog().relation(atom.relation);
+    let keys = shared
+        .iter()
+        .map(|name| {
+            variables
+                .iter()
+                .position(|candidate| candidate.as_ref() == Some(name))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let local_conditions = conditions
+        .iter()
+        .filter(|condition| {
+            let used = crate::flowlog_analysis::binary_expression_variables(condition);
+            used.is_subset(own_names) && (!used.is_subset(other_names) || is_left)
+        })
+        .cloned()
+        .collect_vec();
+    let local_variables = local_conditions
+        .iter()
+        .flat_map(crate::flowlog_analysis::binary_expression_variables)
+        .collect::<std::collections::BTreeSet<_>>();
+    let values = variables
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            let name = name.as_ref()?;
+            (!shared.contains(name)
+                && (live_variables.contains(name) || local_variables.contains(name)))
+            .then_some(index)
+        })
+        .collect_vec();
+    let bindings = variables
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| Some((name.clone()?, index)))
+        .collect::<BTreeMap<_, _>>();
+    let comparisons = local_conditions
+        .iter()
+        .map(|comparison| {
+            let data_type = expression_type(&comparison.left, &bindings, relation)
+                .or_else(|| expression_type(&comparison.right, &bindings, relation))?;
+            Some(flowlog_fp::ComparisonExprArgument {
+                left: flowlog_arithmetic(&comparison.left, &bindings, &data_type)?,
+                operator: flowlog_comparison_operator(&comparison.op)?,
+                right: flowlog_arithmetic(&comparison.right, &bindings, &data_type)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let alias = keys.len() == relation.columns.len() && values.is_empty() && comparisons.is_empty();
+    let fingerprint = flowlog_fp::unary_expressions(
+        "row_to_kv",
+        flowlog_fp::relation(&relation_fingerprint_name(relation)),
+        keys.iter()
+            .map(|&index| {
+                crate::flowlog_analysis::flowlog_variable(TransformationArgument::KV((
+                    false, index,
+                )))
+            })
+            .collect(),
+        values
+            .iter()
+            .map(|&index| {
+                crate::flowlog_analysis::flowlog_variable(TransformationArgument::KV((
+                    false, index,
+                )))
+            })
+            .collect(),
+        Vec::new(),
+        Vec::new(),
+        comparisons,
+    );
+    Some(JoinSidePlan {
+        atom: atom.clone(),
+        relation: relation.clone(),
+        variables,
+        keys,
+        values,
+        bindings,
+        conditions: local_conditions,
+        alias,
+        fingerprint,
+    })
+}
+
+fn join_argument(
+    name: &str,
+    shared: &[String],
+    left: &JoinSidePlan,
+    right: &JoinSidePlan,
+) -> Option<TransformationArgument> {
+    if let Some(index) = shared.iter().position(|candidate| candidate == name) {
+        return Some(TransformationArgument::Jn((true, true, index)));
+    }
+    if let Some(column) = left
+        .variables
+        .iter()
+        .position(|candidate| candidate.as_deref() == Some(name))
+    {
+        let index = left
+            .values
+            .iter()
+            .position(|candidate| *candidate == column)?;
+        return Some(TransformationArgument::Jn((true, false, index)));
+    }
+    let column = right
+        .variables
+        .iter()
+        .position(|candidate| candidate.as_deref() == Some(name))?;
+    let index = right
+        .values
+        .iter()
+        .position(|candidate| *candidate == column)?;
+    Some(TransformationArgument::Jn((false, false, index)))
 }
 
 fn select_single_operator(

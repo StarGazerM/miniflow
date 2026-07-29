@@ -8,15 +8,16 @@ use syn::{Expr, Result};
 use crate::compiler::{CompilerContext, Registry};
 use crate::flowlog_analysis::{
     binary_expression_variables, expression_mentions_ident, expression_type,
-    expression_variable_ident, expression_variables, flowlog_arithmetic, flowlog_arithmetic_with,
+    expression_variable_ident, expression_variables, flowlog_arithmetic,
     flowlog_comparison_operator, flowlog_data_type, flowlog_variable, variable_name,
 };
 use crate::flowlog_fp;
 use crate::flowlog_fp::TransformationArgument;
 use crate::flowlog_plan::{
-    DIRECT_AGGREGATE, DirectAggregatePlan, SINGLE_FILTER, SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP,
-    SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE, SingleAtomPlan, TUPLE_EQUIJOIN, TupleEquijoinPlan,
-    UNARY_ANTIJOIN, UnaryAntijoinPlan, UnaryAntijoinStage,
+    BINARY_JOIN, BinaryJoinPlan, DIRECT_AGGREGATE, DirectAggregatePlan, JoinSidePlan,
+    SINGLE_FILTER, SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP, SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE,
+    SingleAtomPlan, TUPLE_EQUIJOIN, TupleEquijoinPlan, UNARY_ANTIJOIN, UnaryAntijoinPlan,
+    UnaryAntijoinStage,
 };
 use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId, Rule, Scc};
 use crate::pipeline::{PlanRule, PlanningCatalog, RuleRequest};
@@ -587,7 +588,7 @@ impl HirProgram {
             return Ok(vec![emitted]);
         }
         if let Some((target_relation, emitted)) =
-            self.emit_flowlog_binary_join(rule_index, initialized)
+            planned.as_ref().and_then(Self::render_flowlog_binary_join)
         {
             initialized.insert(target_relation);
             return Ok(vec![emitted]);
@@ -863,6 +864,108 @@ impl HirProgram {
                     |k, _lv, rv| { Some((k.0.clone(), rv.0.clone())) },
                 );
                 let #target = #join_transform.clone().consolidate();
+            },
+        ))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn render_flowlog_binary_join(plan: &RulePlan) -> Option<(RelationId, TokenStream)> {
+        let root = plan.root();
+        if plan.graph().nodes().get(root.index())?.operator() != BINARY_JOIN {
+            return None;
+        }
+        let physical = plan
+            .graph()
+            .facts()
+            .relation::<BinaryJoinPlan>()
+            .iter()
+            .find(|physical| physical.node == root)?;
+        let head_variables = physical
+            .head
+            .arguments
+            .iter()
+            .flat_map(expression_variables)
+            .chain(
+                physical
+                    .join_conditions
+                    .iter()
+                    .flat_map(binary_expression_variables),
+            )
+            .collect::<BTreeSet<_>>();
+        let key_binding = if physical
+            .shared
+            .iter()
+            .any(|name| head_variables.contains(name))
+        {
+            format_ident!("k")
+        } else {
+            format_ident!("_k")
+        };
+        let left_binding = if physical.left.values.is_empty() {
+            format_ident!("_lv")
+        } else {
+            format_ident!("lv")
+        };
+        let right_binding = if physical.right.values.is_empty() {
+            format_ident!("_rv")
+        } else {
+            format_ident!("rv")
+        };
+        let locate = |name: &str| {
+            render_join_argument(name, physical, &key_binding, &left_binding, &right_binding)
+        };
+        let outputs = physical
+            .head
+            .arguments
+            .iter()
+            .map(|expression| emit_flowlog_expression_with(expression, &locate))
+            .collect::<Option<Vec<_>>>()?;
+        let join_predicates = physical
+            .join_conditions
+            .iter()
+            .map(|comparison| {
+                let left = emit_flowlog_expression_with(&comparison.left, &locate)?;
+                let right = emit_flowlog_expression_with(&comparison.right, &locate)?;
+                let operator = &comparison.op;
+                Some(quote! { (#left) #operator (#right) })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let joined = if join_predicates.is_empty() {
+            let row = tuple(outputs);
+            quote! { Some(#row) }
+        } else {
+            let row = tuple(outputs);
+            quote! {
+                if #(#join_predicates)&&* {
+                    Some(#row)
+                } else {
+                    None
+                }
+            }
+        };
+        let (_, left_arrangement, left_emitted) = render_join_side(&physical.left)?;
+        let (_, right_arrangement, right_emitted) = render_join_side(&physical.right)?;
+        let side_emissions = quote! { #left_emitted #right_emitted };
+        let join_transform = format_ident!("t_{}", physical.join_fingerprint);
+        let target = collection_ident(&physical.target_relation);
+        let binding = if physical.target_initialized {
+            quote! {
+                let #target = #target
+                    .concatenate([#join_transform.clone()])
+                    .consolidate();
+            }
+        } else {
+            quote! { let #target = #join_transform.clone().consolidate(); }
+        };
+        Some((
+            physical.head.relation,
+            quote! {
+                #side_emissions
+                let #join_transform = #left_arrangement.clone().join_core(
+                    #right_arrangement.clone(),
+                    |#key_binding, #left_binding, #right_binding| { #joined },
+                );
+                #binding
             },
         ))
     }
@@ -1334,472 +1437,6 @@ impl HirProgram {
         ))
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn emit_flowlog_binary_join(
-        &self,
-        rule_index: usize,
-        initialized: &BTreeSet<RelationId>,
-    ) -> Option<(RelationId, TokenStream)> {
-        let rule = &self.rules[rule_index];
-        let [head] = rule.heads.as_slice() else {
-            return None;
-        };
-        let [BodyItem::Atom(left), BodyItem::Atom(right), tail @ ..] = rule.body.as_slice() else {
-            return None;
-        };
-        let conditions = tail
-            .iter()
-            .map(|item| match item {
-                BodyItem::Condition(Expr::Binary(condition)) => Some(condition.clone()),
-                _ => None,
-            })
-            .collect::<Option<Vec<_>>>()?;
-        if !initialized.contains(&left.relation) || !initialized.contains(&right.relation) {
-            return None;
-        }
-
-        let variables = |atom: &Atom| {
-            atom.arguments
-                .iter()
-                .map(|argument| {
-                    if matches!(argument, Expr::Infer(_)) {
-                        Some(None)
-                    } else {
-                        variable_name(argument).map(Some)
-                    }
-                })
-                .collect::<Option<Vec<_>>>()
-        };
-        let left_variables = variables(left)?;
-        let right_variables = variables(right)?;
-        let head_variables = head
-            .arguments
-            .iter()
-            .flat_map(expression_variables)
-            .collect::<BTreeSet<_>>();
-        let names = |variables: &[Option<String>]| {
-            variables.iter().flatten().cloned().collect::<BTreeSet<_>>()
-        };
-        let initial_left_names = names(&left_variables);
-        let initial_right_names = names(&right_variables);
-        let cross_variables = conditions
-            .iter()
-            .filter_map(|condition| {
-                let used = binary_expression_variables(condition)
-                    .into_iter()
-                    .collect::<BTreeSet<_>>();
-                (!used.is_subset(&initial_left_names) && !used.is_subset(&initial_right_names))
-                    .then_some(used)
-            })
-            .flatten()
-            .collect::<BTreeSet<_>>();
-        let live_variables = head_variables
-            .union(&cross_variables)
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        let payload_width = |names: &[Option<String>], other: &[Option<String>]| {
-            names
-                .iter()
-                .flatten()
-                .filter(|name| {
-                    !other.iter().flatten().any(|candidate| candidate == *name)
-                        && live_variables.contains(*name)
-                })
-                .count()
-        };
-        let (left, right, left_variables, right_variables) =
-            if payload_width(&left_variables, &right_variables) > 0
-                && payload_width(&right_variables, &left_variables) == 0
-            {
-                (right, left, right_variables, left_variables)
-            } else {
-                (left, right, left_variables, right_variables)
-            };
-        let shared = left_variables
-            .iter()
-            .flatten()
-            .filter(|name| right_variables.iter().flatten().any(|right| right == *name))
-            .cloned()
-            .unique()
-            .collect_vec();
-        if shared.is_empty() && !left.arguments.is_empty() && !right.arguments.is_empty() {
-            return None;
-        }
-        let left_names = names(&left_variables);
-        let right_names = names(&right_variables);
-        let side = |atom: &Atom,
-                    names: &[Option<String>],
-                    own_names: &BTreeSet<String>,
-                    other_names: &BTreeSet<String>| {
-            let relation = &self.relations[atom.relation.0];
-            let keys = shared
-                .iter()
-                .map(|name| {
-                    names
-                        .iter()
-                        .position(|candidate| candidate.as_ref() == Some(name))
-                })
-                .collect::<Option<Vec<_>>>()?;
-            let local_conditions = conditions
-                .iter()
-                .filter(|condition| {
-                    let used = binary_expression_variables(condition);
-                    used.is_subset(own_names)
-                        && (!used.is_subset(other_names)
-                            || atom.relation == left.relation && names == left_variables.as_slice())
-                })
-                .cloned()
-                .collect_vec();
-            let local_variables = local_conditions
-                .iter()
-                .flat_map(binary_expression_variables)
-                .collect::<BTreeSet<_>>();
-            let values = names
-                .iter()
-                .enumerate()
-                .filter_map(|(index, name)| {
-                    let name = name.as_ref()?;
-                    (!shared.contains(name)
-                        && (live_variables.contains(name) || local_variables.contains(name)))
-                    .then_some(index)
-                })
-                .collect_vec();
-            let bindings = names
-                .iter()
-                .enumerate()
-                .filter_map(|(index, name)| Some((name.clone()?, index)))
-                .collect::<BTreeMap<_, _>>();
-            let comparisons = local_conditions
-                .iter()
-                .map(|comparison| {
-                    let data_type = expression_type(&comparison.left, &bindings, relation)
-                        .or_else(|| expression_type(&comparison.right, &bindings, relation))?;
-                    Some(flowlog_fp::ComparisonExprArgument {
-                        left: flowlog_arithmetic(&comparison.left, &bindings, &data_type)?,
-                        operator: flowlog_comparison_operator(&comparison.op)?,
-                        right: flowlog_arithmetic(&comparison.right, &bindings, &data_type)?,
-                    })
-                })
-                .collect::<Option<Vec<_>>>()?;
-            let alias =
-                keys.len() == relation.columns.len() && values.is_empty() && comparisons.is_empty();
-            let fingerprint = flowlog_fp::unary_expressions(
-                "row_to_kv",
-                flowlog_fp::relation(&flowlog_relation_fingerprint_name(relation)),
-                keys.iter()
-                    .map(|&index| flowlog_variable(TransformationArgument::KV((false, index))))
-                    .collect(),
-                values
-                    .iter()
-                    .map(|&index| flowlog_variable(TransformationArgument::KV((false, index))))
-                    .collect(),
-                Vec::new(),
-                Vec::new(),
-                comparisons,
-            );
-            Some((
-                relation,
-                keys,
-                values,
-                bindings,
-                local_conditions,
-                alias,
-                fingerprint,
-            ))
-        };
-        let (
-            left_relation,
-            left_keys,
-            left_values,
-            left_bindings,
-            left_conditions,
-            left_alias,
-            left_plan,
-        ) = side(left, &left_variables, &left_names, &right_names)?;
-        let (
-            right_relation,
-            right_keys,
-            right_values,
-            right_bindings,
-            right_conditions,
-            right_alias,
-            right_plan,
-        ) = side(right, &right_variables, &right_names, &left_names)?;
-
-        let key_binding = if shared.iter().any(|name| live_variables.contains(name)) {
-            format_ident!("k")
-        } else {
-            format_ident!("_k")
-        };
-        let left_binding = if left_values.is_empty() {
-            format_ident!("_lv")
-        } else {
-            format_ident!("lv")
-        };
-        let right_binding = if right_values.is_empty() {
-            format_ident!("_rv")
-        } else {
-            format_ident!("rv")
-        };
-        let locate = |name: &str| {
-            if let Some(index) = shared.iter().position(|candidate| candidate == name) {
-                let field = syn::Index::from(index);
-                let binding = &key_binding;
-                Some((
-                    TransformationArgument::Jn((true, true, index)),
-                    quote! { #binding.#field.clone() },
-                ))
-            } else if let Some(column) = left_variables
-                .iter()
-                .position(|candidate| candidate.as_deref() == Some(name))
-            {
-                let index = left_values
-                    .iter()
-                    .position(|candidate| *candidate == column)?;
-                let field = syn::Index::from(index);
-                let binding = &left_binding;
-                Some((
-                    TransformationArgument::Jn((true, false, index)),
-                    quote! { #binding.#field.clone() },
-                ))
-            } else {
-                let column = right_variables
-                    .iter()
-                    .position(|candidate| candidate.as_deref() == Some(name))?;
-                let index = right_values
-                    .iter()
-                    .position(|candidate| *candidate == column)?;
-                let field = syn::Index::from(index);
-                let binding = &right_binding;
-                Some((
-                    TransformationArgument::Jn((false, false, index)),
-                    quote! { #binding.#field.clone() },
-                ))
-            }
-        };
-        let target_relation = &self.relations[head.relation.0];
-        let outputs = head
-            .arguments
-            .iter()
-            .zip(&target_relation.columns)
-            .map(|(expression, data_type)| {
-                let fingerprint = flowlog_arithmetic_with(
-                    expression,
-                    &|name| locate(name).map(|located| located.0),
-                    data_type,
-                )?;
-                let emitted = emit_flowlog_expression_with(expression, &|name| {
-                    locate(name).map(|located| located.1)
-                })?;
-                Some((fingerprint, emitted))
-            })
-            .collect::<Option<Vec<_>>>()?;
-        let join_conditions = conditions
-            .iter()
-            .filter(|condition| {
-                let used = binary_expression_variables(condition)
-                    .into_iter()
-                    .collect::<BTreeSet<_>>();
-                !used.is_subset(&left_names) && !used.is_subset(&right_names)
-            })
-            .collect_vec();
-        let variable_type = |name: &str| {
-            left_variables
-                .iter()
-                .position(|candidate| candidate.as_deref() == Some(name))
-                .map(|index| &left_relation.columns[index])
-                .or_else(|| {
-                    right_variables
-                        .iter()
-                        .position(|candidate| candidate.as_deref() == Some(name))
-                        .map(|index| &right_relation.columns[index])
-                })
-        };
-        let join_comparisons = join_conditions
-            .iter()
-            .map(|comparison| {
-                let data_type = expression_variables(&comparison.left)
-                    .into_iter()
-                    .find_map(|name| variable_type(&name))
-                    .or_else(|| {
-                        expression_variables(&comparison.right)
-                            .into_iter()
-                            .find_map(|name| variable_type(&name))
-                    })?;
-                Some(flowlog_fp::ComparisonExprArgument {
-                    left: flowlog_arithmetic_with(
-                        &comparison.left,
-                        &|name| locate(name).map(|located| located.0),
-                        data_type,
-                    )?,
-                    operator: flowlog_comparison_operator(&comparison.op)?,
-                    right: flowlog_arithmetic_with(
-                        &comparison.right,
-                        &|name| locate(name).map(|located| located.0),
-                        data_type,
-                    )?,
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
-        let join_plan = flowlog_fp::join_expressions(
-            "jn_to_row",
-            left_plan,
-            right_plan,
-            Vec::new(),
-            outputs
-                .iter()
-                .map(|(argument, _)| argument.clone())
-                .collect(),
-            join_comparisons,
-        );
-
-        let emit_side = |relation: &Relation,
-                         keys: &[usize],
-                         values: &[usize],
-                         bindings: &BTreeMap<String, usize>,
-                         conditions: &[syn::ExprBinary],
-                         alias,
-                         fingerprint| {
-            let transform = format_ident!("t_{fingerprint}");
-            let arrangement = format_ident!("t_{fingerprint}_arr");
-            let collection = collection_ident(relation);
-            let emitted = if alias {
-                quote! {
-                    let #transform = #collection.clone();
-                    let #arrangement = #transform.clone().arrange_by_self();
-                }
-            } else {
-                let rows = row_bindings_flowlog(relation);
-                let selected = keys
-                    .iter()
-                    .chain(values)
-                    .copied()
-                    .chain(bindings.values().copied())
-                    .collect::<BTreeSet<_>>();
-                let pattern = tuple(rows.iter().enumerate().map(|(index, row)| {
-                    if selected.contains(&index) {
-                        quote! { #row }
-                    } else {
-                        let ignored = format_ident!("_x{index}");
-                        quote! { #ignored }
-                    }
-                }));
-                let row_type = tuple_type(relation);
-                let key = tuple(keys.iter().map(|&index| {
-                    let row = &rows[index];
-                    quote! { #row.clone() }
-                }));
-                let value = tuple(values.iter().map(|&index| {
-                    let row = &rows[index];
-                    quote! { #row.clone() }
-                }));
-                let output = if values.is_empty() {
-                    key.clone()
-                } else {
-                    quote! { (#key, #value) }
-                };
-                let predicates = conditions
-                    .iter()
-                    .map(|comparison| {
-                        let left = emit_flowlog_expression(&comparison.left, bindings, &rows)?;
-                        let right = emit_flowlog_expression(&comparison.right, bindings, &rows)?;
-                        let operator = &comparison.op;
-                        Some(quote! { (#left) #operator (#right) })
-                    })
-                    .collect::<Option<Vec<_>>>()?;
-                let iterator = if predicates.is_empty() {
-                    quote! { std::iter::once(#output) }
-                } else {
-                    quote! {
-                        if #(#predicates)&&* {
-                            Some(#output)
-                        } else {
-                            None
-                        }
-                    }
-                };
-                let arrange = if values.is_empty() {
-                    quote! { arrange_by_self }
-                } else {
-                    quote! { arrange_by_key }
-                };
-                quote! {
-                    let #transform = #collection.clone().flat_map(
-                        |#pattern: #row_type| { #iterator }
-                    );
-                    let #arrangement = #transform.clone().#arrange();
-                }
-            };
-            Some((transform, arrangement, emitted))
-        };
-        let (_left_transform, left_arrangement, left_emitted) = emit_side(
-            left_relation,
-            &left_keys,
-            &left_values,
-            &left_bindings,
-            &left_conditions,
-            left_alias,
-            left_plan,
-        )?;
-        let (_right_transform, right_arrangement, right_emitted) = emit_side(
-            right_relation,
-            &right_keys,
-            &right_values,
-            &right_bindings,
-            &right_conditions,
-            right_alias,
-            right_plan,
-        )?;
-        let side_emissions = quote! { #left_emitted #right_emitted };
-        let join_transform = format_ident!("t_{join_plan}");
-        let join_row = tuple(outputs.iter().map(|(_, output)| output.clone()));
-        let join_predicates = join_conditions
-            .iter()
-            .map(|comparison| {
-                let left = emit_flowlog_expression_with(&comparison.left, &|name| {
-                    locate(name).map(|located| located.1)
-                })?;
-                let right = emit_flowlog_expression_with(&comparison.right, &|name| {
-                    locate(name).map(|located| located.1)
-                })?;
-                let operator = &comparison.op;
-                Some(quote! { (#left) #operator (#right) })
-            })
-            .collect::<Option<Vec<_>>>()?;
-        let joined = if join_predicates.is_empty() {
-            quote! { Some(#join_row) }
-        } else {
-            quote! {
-                if #(#join_predicates)&&* {
-                    Some(#join_row)
-                } else {
-                    None
-                }
-            }
-        };
-        let target = collection_ident(&self.relations[head.relation.0]);
-        let binding = if initialized.contains(&head.relation) {
-            quote! {
-                let #target = #target
-                    .concatenate([#join_transform.clone()])
-                    .consolidate();
-            }
-        } else {
-            quote! { let #target = #join_transform.clone().consolidate(); }
-        };
-
-        Some((
-            head.relation,
-            quote! {
-                #side_emissions
-                let #join_transform = #left_arrangement.clone().join_core(
-                    #right_arrangement.clone(),
-                    |#key_binding, #left_binding, #right_binding| { #joined },
-                );
-                #binding
-            },
-        ))
-    }
     #[allow(clippy::too_many_lines)]
     fn emit_recursive_scc(
         &self,
@@ -3992,6 +3629,122 @@ fn render_antijoin_stage(
                 old.is_none().then_some(SEMIRING_ONE)
             });
     }
+}
+
+fn render_join_argument(
+    name: &str,
+    plan: &BinaryJoinPlan,
+    key_binding: &Ident,
+    left_binding: &Ident,
+    right_binding: &Ident,
+) -> Option<TokenStream> {
+    if let Some(index) = plan.shared.iter().position(|candidate| candidate == name) {
+        let field = syn::Index::from(index);
+        return Some(quote! { #key_binding.#field.clone() });
+    }
+    if let Some(column) = plan
+        .left
+        .variables
+        .iter()
+        .position(|candidate| candidate.as_deref() == Some(name))
+    {
+        let index = plan
+            .left
+            .values
+            .iter()
+            .position(|candidate| *candidate == column)?;
+        let field = syn::Index::from(index);
+        return Some(quote! { #left_binding.#field.clone() });
+    }
+    let column = plan
+        .right
+        .variables
+        .iter()
+        .position(|candidate| candidate.as_deref() == Some(name))?;
+    let index = plan
+        .right
+        .values
+        .iter()
+        .position(|candidate| *candidate == column)?;
+    let field = syn::Index::from(index);
+    Some(quote! { #right_binding.#field.clone() })
+}
+
+fn render_join_side(side: &JoinSidePlan) -> Option<(Ident, Ident, TokenStream)> {
+    let transform = format_ident!("t_{}", side.fingerprint);
+    let arrangement = format_ident!("t_{}_arr", side.fingerprint);
+    let collection = collection_ident(&side.relation);
+    if side.alias {
+        let emitted = quote! {
+            let #transform = #collection.clone();
+            let #arrangement = #transform.clone().arrange_by_self();
+        };
+        return Some((transform, arrangement, emitted));
+    }
+
+    let rows = row_bindings_flowlog(&side.relation);
+    let selected = side
+        .keys
+        .iter()
+        .chain(&side.values)
+        .copied()
+        .chain(side.bindings.values().copied())
+        .collect::<BTreeSet<_>>();
+    let pattern = tuple(rows.iter().enumerate().map(|(index, row)| {
+        if selected.contains(&index) {
+            quote! { #row }
+        } else {
+            let ignored = format_ident!("_x{index}");
+            quote! { #ignored }
+        }
+    }));
+    let row_type = tuple_type(&side.relation);
+    let key = tuple(side.keys.iter().map(|&index| {
+        let row = &rows[index];
+        quote! { #row.clone() }
+    }));
+    let value = tuple(side.values.iter().map(|&index| {
+        let row = &rows[index];
+        quote! { #row.clone() }
+    }));
+    let output = if side.values.is_empty() {
+        key.clone()
+    } else {
+        quote! { (#key, #value) }
+    };
+    let predicates = side
+        .conditions
+        .iter()
+        .map(|comparison| {
+            let left = emit_flowlog_expression(&comparison.left, &side.bindings, &rows)?;
+            let right = emit_flowlog_expression(&comparison.right, &side.bindings, &rows)?;
+            let operator = &comparison.op;
+            Some(quote! { (#left) #operator (#right) })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let iterator = if predicates.is_empty() {
+        quote! { std::iter::once(#output) }
+    } else {
+        quote! {
+            if #(#predicates)&&* {
+                Some(#output)
+            } else {
+                None
+            }
+        }
+    };
+    let arrange = if side.values.is_empty() {
+        quote! { arrange_by_self }
+    } else {
+        quote! { arrange_by_key }
+    };
+    let emitted = quote! {
+        let #transform = #collection.clone().flat_map(
+            |#pattern: #row_type| { #iterator }
+        );
+        let #arrangement = #transform.clone().#arrange();
+    };
+    Some((transform, arrangement, emitted))
 }
 
 struct RenderedEnvironment {
