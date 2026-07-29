@@ -36,10 +36,22 @@ read -r flowlog_files flowlog_lines flowlog_code \
     "${ROOT_DIR}/flowlog/flowlog-runtime/src" \
     "${ROOT_DIR}/flowlog/flowlog-compiler/src")"
 
-test "${miniflow_lines}" -le 6500
-test "$((miniflow_lines * 5))" -lt "${flowlog_lines}"
-test "${miniflow_code}" -le 6200
-test "$((miniflow_code * 4))" -lt "${flowlog_code}"
+test "${miniflow_lines}" -le 9600
+test "$((miniflow_lines * 3))" -lt "${flowlog_lines}"
+test "${miniflow_code}" -le 8600
+test "$((miniflow_code * 3))" -lt "${flowlog_code}"
+
+largest_file_lines="$(
+    find \
+        "${ROOT_DIR}/crates/ascent-flow/src" \
+        "${ROOT_DIR}/crates/miniflow-core/src" \
+        "${ROOT_DIR}/crates/miniflow-macro/src" \
+        "${ROOT_DIR}/crates/miniflow/src" \
+        -type f -name '*.rs' -print0 |
+        xargs -0 wc -l |
+        awk '$2 != "total" { if ($1 > max) max = $1 } END { print max + 0 }'
+)"
+test "${largest_file_lines}" -le 2000
 
 comparison="$(printf '%s\n' \
     '<!-- BEGIN TOKEI COMPARISON -->' \

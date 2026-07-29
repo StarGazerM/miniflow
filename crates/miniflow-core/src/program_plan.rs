@@ -359,37 +359,35 @@ fn plan_recursive_region(
     registry: &Registry,
     context: &mut CompilerContext,
 ) -> Result<RegionPlan> {
-    let mut rule_plans = Vec::new();
-    for &rule_index in &scc.rules {
-        let rule = &hir.rules[rule_index];
-        for (head_index, head) in rule.heads.iter().enumerate() {
-            let plan = registry.perform::<PlanRule>(
-                context,
-                RuleRequest::new(
-                    catalog.clone(),
+    let mut plan = registry.perform::<PlanScc>(
+        context,
+        SccRequest::new(catalog.clone(), scc.clone(), initialized.clone()),
+    )?;
+    if plan.is_generic() {
+        let mut rule_plans = Vec::new();
+        for &rule_index in &scc.rules {
+            let rule = &hir.rules[rule_index];
+            for (head_index, head) in rule.heads.iter().enumerate() {
+                let rule_plan = registry.perform::<PlanRule>(
+                    context,
+                    RuleRequest::new(
+                        catalog.clone(),
+                        rule_index,
+                        head_index,
+                        initialized.clone(),
+                        true,
+                    ),
+                )?;
+                rule_plans.push(SccRulePlan::new(
                     rule_index,
                     head_index,
-                    initialized.clone(),
-                    true,
-                ),
-            )?;
-            rule_plans.push(SccRulePlan::new(
-                rule_index,
-                head_index,
-                head.relation,
-                plan,
-            ));
+                    head.relation,
+                    rule_plan,
+                ));
+            }
         }
+        plan.complete_generic(rule_plans)?;
     }
-    let plan = registry.perform::<PlanScc>(
-        context,
-        SccRequest::new(
-            catalog.clone(),
-            scc.clone(),
-            initialized.clone(),
-            rule_plans,
-        ),
-    )?;
     initialized.extend(
         scc.rules
             .iter()

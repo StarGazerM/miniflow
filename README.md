@@ -155,11 +155,13 @@ programs.
 
 The production comparison uses Tokei's `Total` row over Rust source
 directories only; tests, examples, and both benchmark corpora are excluded.
+The size gate also caps every production Rust file at 2,000 lines so compiler
+features cannot rebuild a monolithic planning/code-generation module.
 
 <!-- BEGIN TOKEI COMPARISON -->
 | Production Rust | Files | Lines | Code | Comments | Blanks |
 |---|---:|---:|---:|---:|---:|
-| MiniFlow + AscentFlow | 12 | 6485 | 6091 | 88 | 306 |
+| MiniFlow + AscentFlow | 23 | 9544 | 8523 | 406 | 615 |
 | FlowLog batch stack | 151 | 39910 | 29303 | 6402 | 4205 |
 <!-- END TOKEI COMPARISON -->
 

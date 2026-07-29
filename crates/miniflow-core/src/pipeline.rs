@@ -10,7 +10,7 @@ use crate::compiler::{CompilerContext, Layer, Operation, Registry};
 use crate::flowlog_plan;
 use crate::hir::{Atom, HirProgram, Relation, RelationId, Rule, Scc};
 use crate::rule_plan::RulePlan;
-use crate::scc_plan::{SccPlan, SccRulePlan};
+use crate::scc_plan::SccPlan;
 use crate::{lower, parse};
 
 /// Immutable resolved-program context shared by rule-planning requests.
@@ -126,7 +126,6 @@ pub struct SccRequest {
     catalog: PlanningCatalog,
     scc: Scc,
     initialized: BTreeSet<RelationId>,
-    rule_plans: Vec<SccRulePlan>,
 }
 
 impl SccRequest {
@@ -134,13 +133,11 @@ impl SccRequest {
         catalog: PlanningCatalog,
         scc: Scc,
         initialized: BTreeSet<RelationId>,
-        rule_plans: Vec<SccRulePlan>,
     ) -> Self {
         Self {
             catalog,
             scc,
             initialized,
-            rule_plans,
         }
     }
 
@@ -162,17 +159,17 @@ impl SccRequest {
         &self.initialized
     }
 
-    /// Return completed rule-head plans in source rule/head order.
-    #[must_use]
-    pub fn rule_plans(&self) -> &[SccRulePlan] {
-        &self.rule_plans
-    }
-
     fn into_default_plan(self) -> SccPlan {
         let relation_ids = self
-            .rule_plans
+            .scc
+            .rules
             .iter()
-            .map(SccRulePlan::target)
+            .flat_map(|&rule_index| {
+                self.catalog.rules()[rule_index]
+                    .heads
+                    .iter()
+                    .map(|head| head.relation)
+            })
             .collect::<BTreeSet<_>>();
         let relations = relation_ids
             .iter()
@@ -182,7 +179,7 @@ impl SccRequest {
             .into_iter()
             .filter(|id| !self.initialized.contains(id))
             .collect();
-        SccPlan::build(relations, missing_bases, self.rule_plans)
+        SccPlan::build(relations, missing_bases)
     }
 }
 

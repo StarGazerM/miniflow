@@ -133,34 +133,23 @@ fn an_external_layer_can_intercept_recursive_region_planning() {
 }
 
 #[test]
-fn recursive_region_planning_receives_completed_rule_plans() {
-    let recursive_rule_calls = Rc::new(Cell::new(0));
-    let observed_calls = Rc::clone(&recursive_rule_calls);
-    let observed_plans = Rc::new(RefCell::new(Vec::new()));
-    let captured_plans = Rc::clone(&observed_plans);
+fn generic_recursive_rules_are_planned_after_region_selection() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let rule_events = Rc::clone(&events);
+    let scc_events = Rc::clone(&events);
     let mut compiler = Compiler::new().unwrap();
     compiler
         .registry_mut()
         .around::<PlanRule, _>(move |context, request, next| {
             if request.recursive() {
-                observed_calls.set(observed_calls.get() + 1);
+                rule_events.borrow_mut().push("rule");
             }
             next.call(context, request)
         });
     compiler
         .registry_mut()
         .around::<PlanScc, _>(move |context, request, next| {
-            *captured_plans.borrow_mut() = request
-                .rule_plans()
-                .iter()
-                .map(|planned| {
-                    (
-                        planned.rule_index(),
-                        planned.head_index(),
-                        planned.plan().graph().nodes().len(),
-                    )
-                })
-                .collect();
+            scc_events.borrow_mut().push("scc");
             next.call(context, request)
         });
 
@@ -174,6 +163,37 @@ fn recursive_region_planning_receives_completed_rule_plans() {
         })
         .unwrap();
 
-    assert_eq!(recursive_rule_calls.get(), 1);
-    assert_eq!(*observed_plans.borrow(), [(1, 0, 4)]);
+    assert_eq!(*events.borrow(), ["scc", "rule"]);
+}
+
+#[test]
+fn whole_scc_plans_do_not_invoke_inapplicable_generic_rule_planning() {
+    let recursive_rule_calls = Rc::new(Cell::new(0));
+    let observed = Rc::clone(&recursive_rule_calls);
+    let mut compiler = Compiler::new().unwrap();
+    compiler
+        .registry_mut()
+        .around::<PlanRule, _>(move |context, request, next| {
+            if request.recursive() {
+                observed.set(observed.get() + 1);
+            }
+            next.call(context, request)
+        });
+
+    compiler
+        .compile(quote! {
+            struct Program;
+            relation source(i32);
+            relation edge(i32, i32, i32);
+            relation min_dist(i32, i32);
+            min_dist(node_id, minimum) <--
+                agg minimum = min(0) in source(node_id);
+            min_dist(destination, minimum) <--
+                min_dist(source_id, distance),
+                agg minimum = min(*distance + *weight)
+                    in edge(source_id, destination, weight);
+        })
+        .unwrap();
+
+    assert_eq!(recursive_rule_calls.get(), 0);
 }

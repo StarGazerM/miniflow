@@ -3,6 +3,8 @@
 use crate::hir::{Relation, RelationId};
 use crate::plan::{NodeId, OperatorKey, Plan};
 use crate::rule_plan::RulePlan;
+use proc_macro2::Span;
+use syn::Result;
 
 /// Default recursive SCC lowering.
 pub const GENERIC_RECURSIVE_SCC: OperatorKey = OperatorKey::new("miniflow.scc.generic-recursive");
@@ -91,22 +93,45 @@ pub struct SccPlan {
 }
 
 impl SccPlan {
-    /// Construct the default recursive-region plan.
+    /// Construct the initially empty default recursive-region plan.
     #[must_use]
-    pub fn build(
-        relations: Vec<Relation>,
-        missing_bases: Vec<RelationId>,
-        derivations: Vec<SccRulePlan>,
-    ) -> Self {
+    pub(crate) fn build(relations: Vec<Relation>, missing_bases: Vec<RelationId>) -> Self {
         let mut graph = Plan::default();
         let root = graph.add_node(GENERIC_RECURSIVE_SCC, []);
         graph.facts_mut().insert(GenericRecursiveScc {
             node: root,
             relations,
             missing_bases,
-            derivations,
+            derivations: Vec::new(),
         });
         Self { graph, root }
+    }
+
+    /// Report whether this is the standard per-rule recursive lowering.
+    #[must_use]
+    pub fn is_generic(&self) -> bool {
+        self.graph
+            .nodes()
+            .get(self.root.index())
+            .is_some_and(|node| node.operator() == GENERIC_RECURSIVE_SCC)
+    }
+
+    pub(crate) fn complete_generic(&mut self, derivations: Vec<SccRulePlan>) -> Result<()> {
+        let root = self.root;
+        let physical = self
+            .graph
+            .facts_mut()
+            .relation_mut::<GenericRecursiveScc>()
+            .iter_mut()
+            .find(|physical| physical.node == root)
+            .ok_or_else(|| {
+                syn::Error::new(
+                    Span::call_site(),
+                    "generic recursive SCC node is missing its physical facts",
+                )
+            })?;
+        physical.derivations = derivations;
+        Ok(())
     }
 
     /// Construct an SCC plan from an extension-owned graph.
