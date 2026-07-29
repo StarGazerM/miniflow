@@ -26,6 +26,39 @@ use crate::rule_plan::{
     PROJECT, RulePlan, RuleStep, SOURCE,
 };
 
+struct NamedTransformation {
+    ident: Ident,
+    statement: TokenStream,
+}
+
+struct SpecializedEmission {
+    target: RelationId,
+    transformations: Vec<NamedTransformation>,
+    bindings: Vec<TokenStream>,
+    final_transform: Option<Ident>,
+}
+
+enum RuleEmission {
+    Generic(TokenStream),
+    Specialized(SpecializedEmission),
+}
+
+impl RuleEmission {
+    fn tokens(&self) -> TokenStream {
+        match self {
+            Self::Generic(tokens) => tokens.clone(),
+            Self::Specialized(emission) => {
+                let transformations = emission
+                    .transformations
+                    .iter()
+                    .map(|transformation| &transformation.statement);
+                let bindings = &emission.bindings;
+                quote! { #(#transformations)* #(#bindings)* }
+            }
+        }
+    }
+}
+
 impl HirProgram {
     /// Emit the complete embedded program.
     ///
@@ -407,93 +440,35 @@ impl HirProgram {
                     context,
                 )?);
             }
-            let contains_generic_emission = emitted.iter().any(|emission| {
-                syn::parse2::<syn::Block>(quote! {{ #emission }}).is_ok_and(|block| {
-                    block.stmts.iter().any(|statement| {
-                        matches!(
-                            statement,
-                            syn::Stmt::Local(local)
-                                if matches!(
-                                    &local.pat,
-                                    syn::Pat::Ident(pattern)
-                                        if pattern
-                                            .ident
-                                            .to_string()
-                                            .starts_with("__miniflow_rule_")
-                                )
-                        )
-                    })
-                })
-            });
-            if contains_generic_emission {
+            if emitted
+                .iter()
+                .any(|emission| matches!(emission, RuleEmission::Generic(_)))
+            {
+                let emitted = emitted.iter().map(RuleEmission::tokens);
                 return Ok(quote! { #(#emitted)* });
             }
             let mut transformations = Vec::new();
             let mut bindings =
-                BTreeMap::<u64, (RelationId, Vec<(Vec<syn::Stmt>, Option<Ident>)>)>::new();
+                BTreeMap::<u64, (RelationId, Vec<(Vec<TokenStream>, Option<Ident>)>)>::new();
             for emission in emitted {
-                let block: syn::Block = syn::parse2(quote! {{ #emission }})?;
-                let is_generic = block.stmts.iter().any(|statement| {
-                    matches!(
-                    statement,
-                    syn::Stmt::Local(local)
-                        if matches!(
-                            &local.pat,
-                            syn::Pat::Ident(pattern)
-                                if pattern.ident.to_string().starts_with("__miniflow_rule_")
-                        )
-                    )
-                });
-                let mut last_transform = None;
-                let mut emission_bindings =
-                    BTreeMap::<u64, (RelationId, Vec<syn::Stmt>, Option<Ident>)>::new();
-                for statement in block.stmts {
-                    let local_ident = match &statement {
-                        syn::Stmt::Local(local) => match &local.pat {
-                            syn::Pat::Ident(pattern) => Some(pattern.ident.clone()),
-                            _ => None,
-                        },
-                        _ => None,
-                    };
-                    if !is_generic
-                        && let Some(ident) = &local_ident
-                        && ident.to_string().starts_with("t_")
-                    {
-                        if !ident.to_string().ends_with("_arr") {
-                            last_transform = Some(ident.clone());
-                        }
-                        if !emitted_transformations.insert(ident.to_string()) {
-                            continue;
-                        }
-                    }
-                    let relation = match &statement {
-                        syn::Stmt::Local(local) if !is_generic => match &local.pat {
-                            syn::Pat::Ident(pattern) => self
-                                .relations
-                                .iter()
-                                .find(|relation| collection_ident(relation) == pattern.ident),
-                            _ => None,
-                        },
-                        _ => None,
-                    };
-                    if let Some(relation) = relation {
-                        let fingerprint =
-                            flowlog_fp::relation(&flowlog_relation_fingerprint_name(relation));
-                        let binding = emission_bindings
-                            .entry(fingerprint)
-                            .or_insert_with(|| (relation.id, Vec::new(), last_transform.clone()));
-                        binding.1.push(statement);
-                    } else {
-                        transformations.push(statement);
-                    }
-                }
-                for (fingerprint, (relation, statements, transform)) in emission_bindings {
-                    bindings
-                        .entry(fingerprint)
-                        .or_insert_with(|| (relation, Vec::new()))
-                        .1
-                        .push((statements, transform));
-                }
+                let RuleEmission::Specialized(emission) = emission else {
+                    unreachable!("generic emissions returned before structured grouping");
+                };
+                transformations.extend(emission.transformations.into_iter().filter_map(
+                    |transformation| {
+                        emitted_transformations
+                            .insert(transformation.ident.to_string())
+                            .then_some(transformation.statement)
+                    },
+                ));
+                let fingerprint = flowlog_fp::relation(&flowlog_relation_fingerprint_name(
+                    &self.relations[emission.target.0],
+                ));
+                bindings
+                    .entry(fingerprint)
+                    .or_insert_with(|| (emission.target, Vec::new()))
+                    .1
+                    .push((emission.bindings, emission.final_transform));
             }
             let bindings = bindings.into_values().map(|(relation, mut group)| {
                 if group.len() == 1 {
@@ -543,7 +518,7 @@ impl HirProgram {
         catalog: &PlanningCatalog,
         registry: &Registry,
         context: &mut CompilerContext,
-    ) -> Result<Vec<TokenStream>> {
+    ) -> Result<Vec<RuleEmission>> {
         let rule = &self.rules[rule_index];
         let mut planned = if rule.heads.len() == 1 {
             Some(registry.perform::<PlanRule>(
@@ -553,45 +528,41 @@ impl HirProgram {
         } else {
             None
         };
-        if let Some((target_relation, emitted)) =
-            planned.as_ref().and_then(Self::render_flowlog_single_atom)
-        {
-            initialized.insert(target_relation);
-            return Ok(vec![emitted]);
+        if let Some(emission) = planned.as_ref().and_then(Self::render_flowlog_single_atom) {
+            initialized.insert(emission.target);
+            return Ok(vec![RuleEmission::Specialized(emission)]);
         }
-        if let Some((target_relation, emitted)) = planned
+        if let Some(emission) = planned
             .as_ref()
             .and_then(Self::render_flowlog_direct_aggregate)
         {
-            initialized.insert(target_relation);
-            return Ok(vec![emitted]);
+            initialized.insert(emission.target);
+            return Ok(vec![RuleEmission::Specialized(emission)]);
         }
-        if let Some((target_relation, emitted)) = planned
+        if let Some(emission) = planned
             .as_ref()
             .and_then(Self::render_flowlog_unary_antijoin)
         {
-            initialized.insert(target_relation);
-            return Ok(vec![emitted]);
+            initialized.insert(emission.target);
+            return Ok(vec![RuleEmission::Specialized(emission)]);
         }
-        if let Some((target_relation, emitted)) = planned
+        if let Some(emission) = planned
             .as_ref()
             .and_then(Self::render_flowlog_tuple_equijoin)
         {
-            initialized.insert(target_relation);
-            return Ok(vec![emitted]);
+            initialized.insert(emission.target);
+            return Ok(vec![RuleEmission::Specialized(emission)]);
         }
-        if let Some((target_relation, emitted)) = planned
+        if let Some(emission) = planned
             .as_ref()
             .and_then(Self::render_flowlog_three_atom_join)
         {
-            initialized.insert(target_relation);
-            return Ok(vec![emitted]);
+            initialized.insert(emission.target);
+            return Ok(vec![RuleEmission::Specialized(emission)]);
         }
-        if let Some((target_relation, emitted)) =
-            planned.as_ref().and_then(Self::render_flowlog_binary_join)
-        {
-            initialized.insert(target_relation);
-            return Ok(vec![emitted]);
+        if let Some(emission) = planned.as_ref().and_then(Self::render_flowlog_binary_join) {
+            initialized.insert(emission.target);
+            return Ok(vec![RuleEmission::Specialized(emission)]);
         }
         let mut emitted = Vec::with_capacity(rule.heads.len());
         for (head_index, head) in rule.heads.iter().enumerate() {
@@ -616,21 +587,21 @@ impl HirProgram {
             };
             let target = collection_ident(&self.relations[head.relation.0]);
             if initialized.insert(head.relation) {
-                emitted.push(quote! {
+                emitted.push(RuleEmission::Generic(quote! {
                     let #derived = #expression;
                     let #target = #derived.consolidate();
-                });
+                }));
             } else {
-                emitted.push(quote! {
+                emitted.push(RuleEmission::Generic(quote! {
                     let #derived = #expression;
                     let #target = #target.concat(#derived).consolidate();
-                });
+                }));
             }
         }
         Ok(emitted)
     }
 
-    fn render_flowlog_single_atom(plan: &RulePlan) -> Option<(RelationId, TokenStream)> {
+    fn render_flowlog_single_atom(plan: &RulePlan) -> Option<SpecializedEmission> {
         let root = plan.root();
         let operator = plan.graph().nodes().get(root.index())?.operator();
         if !matches!(
@@ -715,18 +686,23 @@ impl HirProgram {
                 let #target_collection = #transform.clone().consolidate();
             }
         };
-        Some((
-            head.relation,
-            quote! {
+        let statement = quote! {
                 let #transform = #source_collection
                     .clone()
                     #operation;
-                #binding
-            },
-        ))
+        };
+        Some(SpecializedEmission {
+            target: head.relation,
+            transformations: vec![NamedTransformation {
+                ident: transform.clone(),
+                statement,
+            }],
+            bindings: vec![binding],
+            final_transform: Some(transform),
+        })
     }
 
-    fn render_flowlog_direct_aggregate(plan: &RulePlan) -> Option<(RelationId, TokenStream)> {
+    fn render_flowlog_direct_aggregate(plan: &RulePlan) -> Option<SpecializedEmission> {
         let root = plan.root();
         if plan.graph().nodes().get(root.index())?.operator() != DIRECT_AGGREGATE {
             return None;
@@ -763,20 +739,27 @@ impl HirProgram {
             &operator,
         )?;
 
-        Some((
-            head.relation,
-            quote! {
+        let transform_statement = quote! {
                 let #transform = #source_collection
                     .clone()
                     #operation;
-                #initial_binding
+        };
+        let aggregate_binding = quote! {
                 let #target_collection = #target_collection
                     #aggregation;
-            },
-        ))
+        };
+        Some(SpecializedEmission {
+            target: head.relation,
+            transformations: vec![NamedTransformation {
+                ident: transform.clone(),
+                statement: transform_statement,
+            }],
+            bindings: vec![initial_binding, aggregate_binding],
+            final_transform: Some(transform),
+        })
     }
 
-    fn render_flowlog_unary_antijoin(plan: &RulePlan) -> Option<(RelationId, TokenStream)> {
+    fn render_flowlog_unary_antijoin(plan: &RulePlan) -> Option<SpecializedEmission> {
         let root = plan.root();
         if plan.graph().nodes().get(root.index())?.operator() != UNARY_ANTIJOIN {
             return None;
@@ -787,28 +770,29 @@ impl HirProgram {
             .relation::<UnaryAntijoinPlan>()
             .iter()
             .find(|physical| physical.node() == root)?;
-        let positive_emission = render_antijoin_positive_input(physical);
+        let positive_transformations = render_antijoin_positive_input(physical);
         let mut negative_preludes = Vec::with_capacity(physical.stages().len());
-        let mut stages = TokenStream::new();
+        let mut stage_transformations = Vec::new();
         for (index, stage) in physical.stages().iter().enumerate() {
             negative_preludes.push(render_antijoin_negative_input(stage)?);
-            stages.extend(render_antijoin_stage(physical.head(), stage, index > 0));
+            stage_transformations.extend(render_antijoin_stage(physical.head(), stage, index > 0));
         }
         negative_preludes.reverse();
-        let prelude = quote! { #(#negative_preludes)* #positive_emission };
+        let mut transformations = negative_preludes.into_iter().flatten().collect::<Vec<_>>();
+        transformations.extend(positive_transformations);
+        transformations.extend(stage_transformations);
         let target_collection = collection_ident(physical.target_relation());
         let final_transform = format_ident!("t_{}", physical.stages().last()?.output_fingerprint());
-        Some((
-            physical.head().relation,
-            quote! {
-                #prelude
-                #stages
-                let #target_collection = #final_transform.clone().consolidate();
-            },
-        ))
+        let binding = quote! { let #target_collection = #final_transform.clone().consolidate(); };
+        Some(SpecializedEmission {
+            target: physical.head().relation,
+            transformations,
+            bindings: vec![binding],
+            final_transform: Some(final_transform),
+        })
     }
 
-    fn render_flowlog_tuple_equijoin(plan: &RulePlan) -> Option<(RelationId, TokenStream)> {
+    fn render_flowlog_tuple_equijoin(plan: &RulePlan) -> Option<SpecializedEmission> {
         let root = plan.root();
         if plan.graph().nodes().get(root.index())?.operator() != TUPLE_EQUIJOIN {
             return None;
@@ -843,33 +827,65 @@ impl HirProgram {
         let row_key_value = &row_rows[physical.key_column()];
         let row_payload = &row_rows[physical.value_column()];
 
-        Some((
-            physical.head().relation,
-            quote! {
+        let tuple_transform_statement = quote! {
                 let #tuple_transform = #tuple_collection
                     .clone()
                     .flat_map(|#tuple_pattern: #tuple_row_type| {
                         std::iter::once(((#projected,), (#tuple_value.clone(),)))
                     });
+        };
+        let tuple_arrangement_statement = quote! {
                 let #tuple_arrangement =
                     #tuple_transform.clone().arrange_by_key();
+        };
+        let row_transform_statement = quote! {
                 let #row_transform = #row_collection
                     .clone()
                     .flat_map(|#row_pattern: #row_type| {
                         std::iter::once(((#row_key_value.clone(),), (#row_payload.clone(),)))
                     });
+        };
+        let row_arrangement_statement = quote! {
                 let #row_arrangement = #row_transform.clone().arrange_by_key();
+        };
+        let join_statement = quote! {
                 let #join_transform = #tuple_arrangement.clone().join_core(
                     #row_arrangement.clone(),
                     |k, _lv, rv| { Some((k.0.clone(), rv.0.clone())) },
                 );
-                let #target = #join_transform.clone().consolidate();
-            },
-        ))
+        };
+        let binding = quote! { let #target = #join_transform.clone().consolidate(); };
+        Some(SpecializedEmission {
+            target: physical.head().relation,
+            transformations: vec![
+                NamedTransformation {
+                    ident: tuple_transform,
+                    statement: tuple_transform_statement,
+                },
+                NamedTransformation {
+                    ident: tuple_arrangement,
+                    statement: tuple_arrangement_statement,
+                },
+                NamedTransformation {
+                    ident: row_transform,
+                    statement: row_transform_statement,
+                },
+                NamedTransformation {
+                    ident: row_arrangement,
+                    statement: row_arrangement_statement,
+                },
+                NamedTransformation {
+                    ident: join_transform.clone(),
+                    statement: join_statement,
+                },
+            ],
+            bindings: vec![binding],
+            final_transform: Some(join_transform),
+        })
     }
 
     #[allow(clippy::too_many_lines)]
-    fn render_flowlog_binary_join(plan: &RulePlan) -> Option<(RelationId, TokenStream)> {
+    fn render_flowlog_binary_join(plan: &RulePlan) -> Option<SpecializedEmission> {
         let root = plan.root();
         if plan.graph().nodes().get(root.index())?.operator() != BINARY_JOIN {
             return None;
@@ -943,9 +959,9 @@ impl HirProgram {
                 }
             }
         };
-        let (_, left_arrangement, left_emitted) = render_join_side(&physical.left)?;
-        let (_, right_arrangement, right_emitted) = render_join_side(&physical.right)?;
-        let side_emissions = quote! { #left_emitted #right_emitted };
+        let (left_arrangement, mut transformations) = render_join_side(&physical.left)?;
+        let (right_arrangement, right_transformations) = render_join_side(&physical.right)?;
+        transformations.extend(right_transformations);
         let join_transform = format_ident!("t_{}", physical.join_fingerprint);
         let target = collection_ident(&physical.target_relation);
         let binding = if physical.target_initialized {
@@ -957,21 +973,26 @@ impl HirProgram {
         } else {
             quote! { let #target = #join_transform.clone().consolidate(); }
         };
-        Some((
-            physical.head.relation,
-            quote! {
-                #side_emissions
+        let join_statement = quote! {
                 let #join_transform = #left_arrangement.clone().join_core(
                     #right_arrangement.clone(),
                     |#key_binding, #left_binding, #right_binding| { #joined },
                 );
-                #binding
-            },
-        ))
+        };
+        transformations.push(NamedTransformation {
+            ident: join_transform.clone(),
+            statement: join_statement,
+        });
+        Some(SpecializedEmission {
+            target: physical.head.relation,
+            transformations,
+            bindings: vec![binding],
+            final_transform: Some(join_transform),
+        })
     }
 
     #[allow(clippy::too_many_lines)]
-    fn render_flowlog_three_atom_join(plan: &RulePlan) -> Option<(RelationId, TokenStream)> {
+    fn render_flowlog_three_atom_join(plan: &RulePlan) -> Option<SpecializedEmission> {
         let root = plan.root();
         if plan.graph().nodes().get(root.index())?.operator() != THREE_ATOM_JOIN {
             return None;
@@ -1022,26 +1043,39 @@ impl HirProgram {
                 .map(&first_value)
                 .collect::<Option<Vec<_>>>()?,
         );
-        let (_, initial_left_arrangement, left_emission) = render_join_side(&physical.left)?;
-        let (_, initial_right_arrangement, right_emission) = render_join_side(&physical.right)?;
+        let (initial_left_arrangement, mut first_transformations) =
+            render_join_side(&physical.left)?;
+        let (initial_right_arrangement, right_transformations) = render_join_side(&physical.right)?;
+        first_transformations.extend(right_transformations);
         let first_join = format_ident!("t_{}", physical.first_join_fingerprint);
         let first_arrangement = format_ident!("t_{}_arr", physical.first_join_fingerprint);
-        let first_stage = quote! {
-            #left_emission
-            #right_emission
+        let first_join_statement = quote! {
             let #first_join = #initial_left_arrangement.clone().join_core(
                 #initial_right_arrangement.clone(),
                 |#key_binding, #left_binding, #right_binding| {
                     Some((#state_key_row, #state_value_row))
                 },
             );
+        };
+        let first_arrangement_statement = quote! {
             let #first_arrangement = #first_join.clone().arrange_by_key();
         };
-        let (_, third_arrangement, third_emission) = render_join_side(&physical.third)?;
-        let stages = if physical.swap {
-            quote! { #third_emission #first_stage }
+        first_transformations.push(NamedTransformation {
+            ident: first_join,
+            statement: first_join_statement,
+        });
+        first_transformations.push(NamedTransformation {
+            ident: first_arrangement.clone(),
+            statement: first_arrangement_statement,
+        });
+        let (third_arrangement, third_transformations) = render_join_side(&physical.third)?;
+        let mut transformations = if physical.swap {
+            let mut ordered = third_transformations;
+            ordered.extend(first_transformations);
+            ordered
         } else {
-            quote! { #first_stage #third_emission }
+            first_transformations.extend(third_transformations);
+            first_transformations
         };
         let head_names = physical
             .head
@@ -1119,19 +1153,25 @@ impl HirProgram {
             };
         let final_transform = format_ident!("t_{}", physical.final_fingerprint);
         let target = collection_ident(&physical.target_relation);
-        Some((
-            physical.head.relation,
-            quote! {
-                #stages
+        let final_statement = quote! {
                 let #final_transform = #final_left_arrangement.clone().join_core(
                     #final_right_arrangement.clone(),
                     |#final_key_binding, #left_arg, #right_arg| {
                         Some(#final_row)
                     },
                 );
-                let #target = #final_transform.clone().consolidate();
-            },
-        ))
+        };
+        transformations.push(NamedTransformation {
+            ident: final_transform.clone(),
+            statement: final_statement,
+        });
+        let binding = quote! { let #target = #final_transform.clone().consolidate(); };
+        Some(SpecializedEmission {
+            target: physical.head.relation,
+            transformations,
+            bindings: vec![binding],
+            final_transform: Some(final_transform),
+        })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -3141,7 +3181,7 @@ fn render_direct_aggregate_reduction(
     })
 }
 
-fn render_antijoin_positive_input(physical: &UnaryAntijoinPlan) -> TokenStream {
+fn render_antijoin_positive_input(physical: &UnaryAntijoinPlan) -> Vec<NamedTransformation> {
     let relation = physical.positive_relation();
     let keys = physical.positive_keys();
     let values = physical.positive_values();
@@ -3167,33 +3207,48 @@ fn render_antijoin_positive_input(physical: &UnaryAntijoinPlan) -> TokenStream {
         let row = &rows[index];
         quote! { #row.clone() }
     }));
-    if keys.len() == relation.columns.len() && values.is_empty() {
-        quote! {
-            let #transform = #collection.clone();
-            let #arrangement = #transform.clone().arrange_by_self();
-        }
-    } else if values.is_empty() {
-        quote! {
-            let #transform = #collection
-                .clone()
-                .flat_map(|#pattern: #row_type| {
-                    std::iter::once(#key)
-                });
-            let #arrangement = #transform.clone().arrange_by_self();
-        }
-    } else {
-        quote! {
-            let #transform = #collection
-                .clone()
-                .flat_map(|#pattern: #row_type| {
-                    std::iter::once((#key, #value))
-                });
-            let #arrangement = #transform.clone().arrange_by_key();
-        }
-    }
+    let (transform_statement, arrangement_statement) =
+        if keys.len() == relation.columns.len() && values.is_empty() {
+            (
+                quote! { let #transform = #collection.clone(); },
+                quote! { let #arrangement = #transform.clone().arrange_by_self(); },
+            )
+        } else if values.is_empty() {
+            (
+                quote! {
+                    let #transform = #collection
+                        .clone()
+                        .flat_map(|#pattern: #row_type| {
+                            std::iter::once(#key)
+                        });
+                },
+                quote! { let #arrangement = #transform.clone().arrange_by_self(); },
+            )
+        } else {
+            (
+                quote! {
+                    let #transform = #collection
+                        .clone()
+                        .flat_map(|#pattern: #row_type| {
+                            std::iter::once((#key, #value))
+                        });
+                },
+                quote! { let #arrangement = #transform.clone().arrange_by_key(); },
+            )
+        };
+    vec![
+        NamedTransformation {
+            ident: transform,
+            statement: transform_statement,
+        },
+        NamedTransformation {
+            ident: arrangement,
+            statement: arrangement_statement,
+        },
+    ]
 }
 
-fn render_antijoin_negative_input(stage: &UnaryAntijoinStage) -> Option<TokenStream> {
+fn render_antijoin_negative_input(stage: &UnaryAntijoinStage) -> Option<Vec<NamedTransformation>> {
     let relation = stage.relation();
     let rows = row_bindings_flowlog(relation);
     let key_columns = stage
@@ -3233,33 +3288,41 @@ fn render_antijoin_negative_input(stage: &UnaryAntijoinStage) -> Option<TokenStr
         let row = &rows[*index];
         quote! { #row.clone() }
     }));
-    if stage.keys().len() == relation.columns.len() && predicates.is_empty() {
-        Some(quote! {
-            let #transform = #collection.clone();
-            let #arrangement = #transform.clone().arrange_by_self();
-        })
-    } else {
-        let output = if predicates.is_empty() {
-            quote! { std::iter::once(#key) }
+    let transform_statement =
+        if stage.keys().len() == relation.columns.len() && predicates.is_empty() {
+            quote! { let #transform = #collection.clone(); }
         } else {
+            let output = if predicates.is_empty() {
+                quote! { std::iter::once(#key) }
+            } else {
+                quote! {
+                    if #(#predicates)&&* { Some(#key) } else { None }
+                }
+            };
             quote! {
-                if #(#predicates)&&* { Some(#key) } else { None }
+                let #transform = #collection
+                    .clone()
+                    .flat_map(|#pattern: #row_type| { #output });
             }
         };
-        Some(quote! {
-            let #transform = #collection
-                .clone()
-                .flat_map(|#pattern: #row_type| { #output });
-            let #arrangement = #transform.clone().arrange_by_self();
-        })
-    }
+    let arrangement_statement = quote! { let #arrangement = #transform.clone().arrange_by_self(); };
+    Some(vec![
+        NamedTransformation {
+            ident: transform,
+            statement: transform_statement,
+        },
+        NamedTransformation {
+            ident: arrangement,
+            statement: arrangement_statement,
+        },
+    ])
 }
 
 fn render_antijoin_stage(
     head: &Atom,
     stage: &UnaryAntijoinStage,
     arrange_state: bool,
-) -> TokenStream {
+) -> Vec<NamedTransformation> {
     let state_transform = format_ident!("t_{}", stage.state_fingerprint());
     let state_arrangement = format_ident!("t_{}_arr", stage.state_fingerprint());
     let negative_arrangement = format_ident!("t_{}_arr", stage.negative_fingerprint());
@@ -3289,13 +3352,16 @@ fn render_antijoin_stage(
             quote! { #value_binding.#index.clone() }
         }
     }));
-    let state_arrangement_emission = arrange_state.then(|| {
-        quote! {
-            let #state_arrangement = #state_transform.clone().arrange_by_self();
-        }
-    });
-    quote! {
-        #state_arrangement_emission
+    let mut transformations = Vec::with_capacity(usize::from(arrange_state) + 1);
+    if arrange_state {
+        transformations.push(NamedTransformation {
+            ident: state_arrangement.clone(),
+            statement: quote! {
+                let #state_arrangement = #state_transform.clone().arrange_by_self();
+            },
+        });
+    }
+    let output_statement = quote! {
         let #output_transform = #state_arrangement
             .clone()
             .flat_map_ref(|#key_binding, #value_binding|
@@ -3325,7 +3391,12 @@ fn render_antijoin_stage(
             .threshold_semigroup(move |_, _, old| {
                 old.is_none().then_some(SEMIRING_ONE)
             });
-    }
+    };
+    transformations.push(NamedTransformation {
+        ident: output_transform,
+        statement: output_statement,
+    });
+    transformations
 }
 
 fn render_join_argument(
@@ -3407,16 +3478,31 @@ fn render_three_final_argument(
     Some(quote! { #third_binding.#field.clone() })
 }
 
-fn render_join_side(side: &JoinSidePlan) -> Option<(Ident, Ident, TokenStream)> {
+#[allow(clippy::too_many_lines)]
+fn render_join_side(side: &JoinSidePlan) -> Option<(Ident, Vec<NamedTransformation>)> {
     let transform = format_ident!("t_{}", side.fingerprint);
     let arrangement = format_ident!("t_{}_arr", side.fingerprint);
     let collection = collection_ident(&side.relation);
     if side.alias {
-        let emitted = quote! {
+        let transform_statement = quote! {
             let #transform = #collection.clone();
+        };
+        let arrangement_statement = quote! {
             let #arrangement = #transform.clone().arrange_by_self();
         };
-        return Some((transform, arrangement, emitted));
+        return Some((
+            arrangement.clone(),
+            vec![
+                NamedTransformation {
+                    ident: transform,
+                    statement: transform_statement,
+                },
+                NamedTransformation {
+                    ident: arrangement,
+                    statement: arrangement_statement,
+                },
+            ],
+        ));
     }
 
     let rows = row_bindings_flowlog(&side.relation);
@@ -3475,13 +3561,27 @@ fn render_join_side(side: &JoinSidePlan) -> Option<(Ident, Ident, TokenStream)> 
     } else {
         quote! { arrange_by_key }
     };
-    let emitted = quote! {
+    let transform_statement = quote! {
         let #transform = #collection.clone().flat_map(
             |#pattern: #row_type| { #iterator }
         );
+    };
+    let arrangement_statement = quote! {
         let #arrangement = #transform.clone().#arrange();
     };
-    Some((transform, arrangement, emitted))
+    Some((
+        arrangement.clone(),
+        vec![
+            NamedTransformation {
+                ident: transform,
+                statement: transform_statement,
+            },
+            NamedTransformation {
+                ident: arrangement,
+                statement: arrangement_statement,
+            },
+        ],
+    ))
 }
 
 struct RenderedEnvironment {
