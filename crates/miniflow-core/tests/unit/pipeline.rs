@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use quote::quote;
 
-use super::{Compiler, PlanRule};
+use super::{Compiler, PlanRule, PlanScc};
 use crate::rule_plan::RulePlan;
 
 #[test]
@@ -91,6 +91,43 @@ fn an_external_layer_can_inspect_complete_physical_topology() {
         [
             ("miniflow.flowlog.relation-input", vec![]),
             ("miniflow.flowlog.single.identity", vec![0]),
+        ]
+    );
+}
+
+#[test]
+fn an_external_layer_can_intercept_recursive_region_planning() {
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let capture = Rc::clone(&observed);
+    let mut compiler = Compiler::new().unwrap();
+    compiler
+        .registry_mut()
+        .around::<PlanScc, _>(move |context, request, next| {
+            let plan = next.call(context, request)?;
+            *capture.borrow_mut() = plan
+                .graph()
+                .nodes()
+                .iter()
+                .map(|node| node.operator().name())
+                .collect();
+            Ok(plan)
+        });
+
+    compiler
+        .compile(quote! {
+            struct Program;
+            relation path(i32, i32);
+            path(1, 2);
+            path(y, x) <-- path(x, y);
+            path(x, z) <-- path(x, y), path(y, z);
+        })
+        .unwrap();
+
+    assert_eq!(
+        *observed.borrow(),
+        [
+            "miniflow.flowlog.relation-input",
+            "miniflow.flowlog.symmetric-closure",
         ]
     );
 }

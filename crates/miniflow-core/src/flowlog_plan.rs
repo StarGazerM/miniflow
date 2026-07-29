@@ -15,9 +15,10 @@ use crate::flowlog_analysis::{
 use crate::flowlog_fp;
 use crate::flowlog_fp::TransformationArgument;
 use crate::hir::{Atom, BodyItem, Relation};
-use crate::pipeline::{PlanRule, RuleRequest};
+use crate::pipeline::{PlanRule, PlanScc, RuleRequest, SccRequest};
 use crate::plan::{NodeId, OperatorKey, Plan};
 use crate::rule_plan::RulePlan;
+use crate::scc_plan::SccPlan;
 
 /// FlowLog-compatible identity collection reuse.
 pub const SINGLE_IDENTITY: OperatorKey = OperatorKey::new("miniflow.flowlog.single.identity");
@@ -61,6 +62,9 @@ pub const BINARY_JOIN: OperatorKey = OperatorKey::new("miniflow.flowlog.binary-j
 
 /// FlowLog-compatible two-stage three-relation join.
 pub const THREE_ATOM_JOIN: OperatorKey = OperatorKey::new("miniflow.flowlog.three-atom-join");
+
+/// FlowLog-compatible symmetric transitive closure region.
+pub const SYMMETRIC_CLOSURE: OperatorKey = OperatorKey::new("miniflow.flowlog.symmetric-closure");
 
 /// Physical facts needed to render one FlowLog-compatible unary rule.
 #[derive(Clone)]
@@ -535,6 +539,25 @@ pub struct ThreeAtomJoinPlan {
     pub swap: bool,
 }
 
+/// Physical facts needed to render symmetric transitive closure.
+#[derive(Clone)]
+pub struct SymmetricClosurePlan {
+    /// Physical operator node described by these facts.
+    pub node: NodeId,
+    /// Resolved recursive relation.
+    pub target_relation: Relation,
+    /// Recursive relation fingerprint.
+    pub relation_fingerprint: u64,
+    /// Edge-reversal transformation fingerprint.
+    pub reverse_fingerprint: u64,
+    /// Left arrangement transformation fingerprint.
+    pub left_fingerprint: u64,
+    /// Right arrangement transformation fingerprint.
+    pub right_fingerprint: u64,
+    /// Transitive join transformation fingerprint.
+    pub join_fingerprint: u64,
+}
+
 pub(crate) fn install(registry: &mut Registry) {
     registry.around::<PlanRule, _>(|context, request, next| {
         if let Some(plan) = plan_three_atom_join(&request)
@@ -549,6 +572,119 @@ pub(crate) fn install(registry: &mut Registry) {
             next.call(context, request)
         }
     });
+    registry.around::<PlanScc, _>(|context, request, next| {
+        if let Some(plan) = plan_symmetric_closure(&request) {
+            Ok(plan)
+        } else {
+            next.call(context, request)
+        }
+    });
+}
+
+#[allow(clippy::too_many_lines)]
+fn plan_symmetric_closure(request: &SccRequest) -> Option<SccPlan> {
+    let scc = request.scc();
+    if !scc.recursive || scc.rules.len() != 2 {
+        return None;
+    }
+    let mut unary = None;
+    let mut binary = None;
+    for &rule_index in &scc.rules {
+        let rule = &request.catalog().rules()[rule_index];
+        match rule.body.as_slice() {
+            [BodyItem::Atom(_)] => unary = Some(rule),
+            [BodyItem::Atom(_), BodyItem::Atom(_)] => binary = Some(rule),
+            _ => return None,
+        }
+    }
+    let unary = unary?;
+    let binary = binary?;
+    let [unary_head] = unary.heads.as_slice() else {
+        return None;
+    };
+    let [binary_head] = binary.heads.as_slice() else {
+        return None;
+    };
+    let [BodyItem::Atom(unary_atom)] = unary.body.as_slice() else {
+        return None;
+    };
+    let [BodyItem::Atom(left_atom), BodyItem::Atom(right_atom)] = binary.body.as_slice() else {
+        return None;
+    };
+    let target_id = unary_head.relation;
+    let target_relation = request.catalog().relation(target_id);
+    if binary_head.relation != target_id
+        || unary_atom.relation != target_id
+        || left_atom.relation != target_id
+        || right_atom.relation != target_id
+        || !request.initialized().contains(&target_id)
+        || target_relation.columns.len() != 2
+    {
+        return None;
+    }
+    let first = variable_name(&unary_atom.arguments[0])?;
+    let second = variable_name(&unary_atom.arguments[1])?;
+    if variable_name(&unary_head.arguments[0])? != second
+        || variable_name(&unary_head.arguments[1])? != first
+    {
+        return None;
+    }
+    let left_source = variable_name(&left_atom.arguments[0])?;
+    let left_middle = variable_name(&left_atom.arguments[1])?;
+    let right_middle = variable_name(&right_atom.arguments[0])?;
+    let right_destination = variable_name(&right_atom.arguments[1])?;
+    if left_middle != right_middle
+        || variable_name(&binary_head.arguments[0])? != left_source
+        || variable_name(&binary_head.arguments[1])? != right_destination
+    {
+        return None;
+    }
+
+    let relation_fingerprint = flowlog_fp::relation(&relation_fingerprint_name(target_relation));
+    let reverse_fingerprint = flowlog_fp::unary(
+        "row_to_row",
+        relation_fingerprint,
+        [],
+        [
+            TransformationArgument::KV((false, 1)),
+            TransformationArgument::KV((false, 0)),
+        ],
+    );
+    let left_fingerprint = flowlog_fp::unary(
+        "row_to_kv",
+        relation_fingerprint,
+        [TransformationArgument::KV((false, 1))],
+        [TransformationArgument::KV((false, 0))],
+    );
+    let right_fingerprint = flowlog_fp::unary(
+        "row_to_kv",
+        relation_fingerprint,
+        [TransformationArgument::KV((false, 0))],
+        [TransformationArgument::KV((false, 1))],
+    );
+    let join_fingerprint = flowlog_fp::join(
+        "jn_to_row",
+        left_fingerprint,
+        right_fingerprint,
+        [],
+        [
+            TransformationArgument::Jn((true, false, 0)),
+            TransformationArgument::Jn((false, false, 0)),
+        ],
+    );
+    let mut graph = Plan::default();
+    let input = graph.add_node(RELATION_INPUT, []);
+    let node = graph.add_node(SYMMETRIC_CLOSURE, [input]);
+    graph.facts_mut().insert(SymmetricClosurePlan {
+        node,
+        target_relation: target_relation.clone(),
+        relation_fingerprint,
+        reverse_fingerprint,
+        left_fingerprint,
+        right_fingerprint,
+        join_fingerprint,
+    });
+    Some(SccPlan::from_graph(graph, node))
 }
 
 fn plan_single_atom(request: &RuleRequest) -> Option<RulePlan> {

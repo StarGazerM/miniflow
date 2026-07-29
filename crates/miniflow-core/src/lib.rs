@@ -13,6 +13,7 @@ pub mod hir;
 mod pipeline;
 pub mod plan;
 pub mod rule_plan;
+pub mod scc_plan;
 mod syntax;
 
 use proc_macro2::TokenStream;
@@ -20,7 +21,7 @@ use syn::Result;
 
 pub use canonical::extract_dataflow_core;
 pub use hir::HirProgram;
-pub use pipeline::{Compiler, PlanRule, PlanningCatalog, RuleRequest};
+pub use pipeline::{Compiler, PlanRule, PlanScc, PlanningCatalog, RuleRequest, SccRequest};
 pub use syntax::Program;
 
 /// Parse and validate an embedded `MiniFlow` program.

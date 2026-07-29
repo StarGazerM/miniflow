@@ -8,8 +8,9 @@ use syn::Result;
 
 use crate::compiler::{CompilerContext, Layer, Operation, Registry};
 use crate::flowlog_plan;
-use crate::hir::{Atom, HirProgram, Relation, RelationId, Rule};
+use crate::hir::{Atom, HirProgram, Relation, RelationId, Rule, Scc};
 use crate::rule_plan::RulePlan;
+use crate::scc_plan::SccPlan;
 use crate::{lower, parse};
 
 /// Immutable resolved-program context shared by rule-planning requests.
@@ -108,6 +109,56 @@ impl Operation for PlanRule {
     const NAME: &'static str = "miniflow.plan-rule";
 }
 
+/// Input to recursive SCC planning.
+#[derive(Clone)]
+pub struct SccRequest {
+    catalog: PlanningCatalog,
+    scc: Scc,
+    initialized: BTreeSet<RelationId>,
+}
+
+impl SccRequest {
+    pub(crate) const fn new(
+        catalog: PlanningCatalog,
+        scc: Scc,
+        initialized: BTreeSet<RelationId>,
+    ) -> Self {
+        Self {
+            catalog,
+            scc,
+            initialized,
+        }
+    }
+
+    /// Return the immutable resolved-program catalog.
+    #[must_use]
+    pub const fn catalog(&self) -> &PlanningCatalog {
+        &self.catalog
+    }
+
+    /// Return the recursive dependency component.
+    #[must_use]
+    pub const fn scc(&self) -> &Scc {
+        &self.scc
+    }
+
+    /// Return relations materialized before entering this component.
+    #[must_use]
+    pub const fn initialized(&self) -> &BTreeSet<RelationId> {
+        &self.initialized
+    }
+}
+
+/// Open operation that converts one recursive SCC into a physical plan.
+pub struct PlanScc;
+
+impl Operation for PlanScc {
+    type Input = SccRequest;
+    type Output = SccPlan;
+
+    const NAME: &'static str = "miniflow.plan-scc";
+}
+
 /// One configured compiler and its per-expansion context.
 pub struct Compiler {
     registry: Registry,
@@ -125,6 +176,7 @@ impl Compiler {
         flowlog_plan::install(&mut registry);
         registry
             .define::<PlanRule, _>(|_, request| RulePlan::build(request.rule(), request.head()))?;
+        registry.define::<PlanScc, _>(|_, request| Ok(SccPlan::build(request.scc())))?;
         Ok(Self {
             registry,
             context: CompilerContext::default(),

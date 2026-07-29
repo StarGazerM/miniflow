@@ -15,16 +15,17 @@ use crate::flowlog_fp::TransformationArgument;
 use crate::flowlog_plan::{
     BINARY_JOIN, BinaryJoinPlan, DIRECT_AGGREGATE, DirectAggregatePlan, JoinSidePlan,
     SINGLE_FILTER, SINGLE_FILTER_BLOCK, SINGLE_FLAT_MAP, SINGLE_IDENTITY, SINGLE_MAP_IN_PLACE,
-    SingleAtomPlan, THREE_ATOM_JOIN, TUPLE_EQUIJOIN, ThreeAtomJoinPlan, TupleEquijoinPlan,
-    UNARY_ANTIJOIN, UnaryAntijoinPlan, UnaryAntijoinStage,
+    SYMMETRIC_CLOSURE, SingleAtomPlan, SymmetricClosurePlan, THREE_ATOM_JOIN, TUPLE_EQUIJOIN,
+    ThreeAtomJoinPlan, TupleEquijoinPlan, UNARY_ANTIJOIN, UnaryAntijoinPlan, UnaryAntijoinStage,
 };
 use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId, Rule, Scc};
-use crate::pipeline::{PlanRule, PlanningCatalog, RuleRequest};
+use crate::pipeline::{PlanRule, PlanScc, PlanningCatalog, RuleRequest, SccRequest};
 use crate::plan::OperatorKey;
 use crate::rule_plan::{
     AGGREGATE, ANTIJOIN, Binding, BindingMap, CONDITION, FACT, GENERATOR, IF_LET, JOIN, LET,
     PROJECT, RulePlan, RuleStep, SOURCE,
 };
+use crate::scc_plan::SccPlan;
 
 struct NamedTransformation {
     ident: Ident,
@@ -1183,7 +1184,11 @@ impl HirProgram {
         registry: &Registry,
         context: &mut CompilerContext,
     ) -> Result<TokenStream> {
-        if let Some((target, emitted)) = self.emit_flowlog_symmetric_closure(scc, initialized) {
+        let planned = registry.perform::<PlanScc>(
+            context,
+            SccRequest::new(catalog.clone(), scc.clone(), initialized.clone()),
+        )?;
+        if let Some((target, emitted)) = Self::render_flowlog_symmetric_closure(&planned) {
             initialized.insert(target);
             return Ok(emitted);
         }
@@ -1543,115 +1548,32 @@ impl HirProgram {
         ))
     }
 
-    #[allow(clippy::too_many_lines)]
-    fn emit_flowlog_symmetric_closure(
-        &self,
-        scc: &Scc,
-        initialized: &BTreeSet<RelationId>,
-    ) -> Option<(RelationId, TokenStream)> {
-        if scc.rules.len() != 2 {
+    fn render_flowlog_symmetric_closure(plan: &SccPlan) -> Option<(RelationId, TokenStream)> {
+        let root = plan.root();
+        if plan.graph().nodes().get(root.index())?.operator() != SYMMETRIC_CLOSURE {
             return None;
         }
-        let mut unary = None;
-        let mut binary = None;
-        for &rule_index in &scc.rules {
-            let rule = &self.rules[rule_index];
-            match rule.body.as_slice() {
-                [BodyItem::Atom(_)] => unary = Some(rule),
-                [BodyItem::Atom(_), BodyItem::Atom(_)] => binary = Some(rule),
-                _ => return None,
-            }
-        }
-        let unary = unary?;
-        let binary = binary?;
-        let [unary_head] = unary.heads.as_slice() else {
-            return None;
-        };
-        let [binary_head] = binary.heads.as_slice() else {
-            return None;
-        };
-        let [BodyItem::Atom(unary_atom)] = unary.body.as_slice() else {
-            return None;
-        };
-        let [BodyItem::Atom(left_atom), BodyItem::Atom(right_atom)] = binary.body.as_slice() else {
-            return None;
-        };
-        let target_id = unary_head.relation;
-        let target_relation = &self.relations[target_id.0];
-        if binary_head.relation != target_id
-            || unary_atom.relation != target_id
-            || left_atom.relation != target_id
-            || right_atom.relation != target_id
-            || !initialized.contains(&target_id)
-            || target_relation.columns.len() != 2
-        {
-            return None;
-        }
-        let first = variable_name(&unary_atom.arguments[0])?;
-        let second = variable_name(&unary_atom.arguments[1])?;
-        if variable_name(&unary_head.arguments[0])? != second
-            || variable_name(&unary_head.arguments[1])? != first
-        {
-            return None;
-        }
-        let left_source = variable_name(&left_atom.arguments[0])?;
-        let left_middle = variable_name(&left_atom.arguments[1])?;
-        let right_middle = variable_name(&right_atom.arguments[0])?;
-        let right_destination = variable_name(&right_atom.arguments[1])?;
-        if left_middle != right_middle
-            || variable_name(&binary_head.arguments[0])? != left_source
-            || variable_name(&binary_head.arguments[1])? != right_destination
-        {
-            return None;
-        }
-
-        let relation_plan =
-            flowlog_fp::relation(&flowlog_relation_fingerprint_name(target_relation));
-        let reverse_plan = flowlog_fp::unary(
-            "row_to_row",
-            relation_plan,
-            [],
-            [
-                TransformationArgument::KV((false, 1)),
-                TransformationArgument::KV((false, 0)),
-            ],
-        );
-        let left_plan = flowlog_fp::unary(
-            "row_to_kv",
-            relation_plan,
-            [TransformationArgument::KV((false, 1))],
-            [TransformationArgument::KV((false, 0))],
-        );
-        let right_plan = flowlog_fp::unary(
-            "row_to_kv",
-            relation_plan,
-            [TransformationArgument::KV((false, 0))],
-            [TransformationArgument::KV((false, 1))],
-        );
-        let join_plan = flowlog_fp::join(
-            "jn_to_row",
-            left_plan,
-            right_plan,
-            [],
-            [
-                TransformationArgument::Jn((true, false, 0)),
-                TransformationArgument::Jn((false, false, 0)),
-            ],
-        );
+        let physical = plan
+            .graph()
+            .facts()
+            .relation::<SymmetricClosurePlan>()
+            .iter()
+            .find(|physical| physical.node == root)?;
+        let target_relation = &physical.target_relation;
         let target = collection_ident(target_relation);
         let entered = inner_base_ident(target_relation);
         let variable = variable_ident(target_relation);
         let recursive = inner_collection_ident(target_relation);
-        let reverse = format_ident!("t_{reverse_plan}");
-        let left = format_ident!("t_{left_plan}");
-        let left_arr = format_ident!("t_{left_plan}_arr");
-        let right = format_ident!("t_{right_plan}");
-        let right_arr = format_ident!("t_{right_plan}_arr");
-        let joined = format_ident!("t_{join_plan}");
-        let next = format_ident!("next_{relation_plan}");
+        let reverse = format_ident!("t_{}", physical.reverse_fingerprint);
+        let left = format_ident!("t_{}", physical.left_fingerprint);
+        let left_arr = format_ident!("t_{}_arr", physical.left_fingerprint);
+        let right = format_ident!("t_{}", physical.right_fingerprint);
+        let right_arr = format_ident!("t_{}_arr", physical.right_fingerprint);
+        let joined = format_ident!("t_{}", physical.join_fingerprint);
+        let next = format_ident!("next_{}", physical.relation_fingerprint);
 
         Some((
-            target_id,
+            target_relation.id,
             quote! {
                 let #target = scope.iterative::<Iter, _, _>(|inner| {
                     let #entered = #target.clone().enter(inner);
