@@ -5,9 +5,16 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{Expr, Result};
 
+use crate::compiler::{CompilerContext, Registry};
 use crate::flowlog_fp;
 use crate::flowlog_fp::TransformationArgument;
 use crate::hir::{Aggregate, Atom, BodyItem, HirProgram, Relation, RelationId, Rule, Scc};
+use crate::pipeline::{PlanRule, RuleRequest};
+use crate::plan::OperatorKey;
+use crate::rule_plan::{
+    AGGREGATE, ANTIJOIN, Binding, BindingMap, CONDITION, FACT, GENERATOR, IF_LET, JOIN, LET,
+    PROJECT, RuleStep, SOURCE,
+};
 
 impl HirProgram {
     /// Emit the complete embedded program.
@@ -17,11 +24,19 @@ impl HirProgram {
     /// Returns a diagnostic when a rule is outside the currently implemented
     /// positive relational kernel.
     pub fn emit(&self) -> Result<TokenStream> {
+        crate::Compiler::new()?.emit_hir(self)
+    }
+
+    pub(crate) fn emit_with(
+        &self,
+        registry: &Registry,
+        context: &mut CompilerContext,
+    ) -> Result<TokenStream> {
         let declarations = self.emit_declarations();
         let name = &self.signature.name;
         let generics = &self.signature.generics;
         let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
-        let run = self.emit_run()?;
+        let run = self.emit_run(registry, context)?;
 
         Ok(quote! {
             #declarations
@@ -33,7 +48,7 @@ impl HirProgram {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn emit_run(&self) -> Result<TokenStream> {
+    fn emit_run(&self, registry: &Registry, context: &mut CompilerContext) -> Result<TokenStream> {
         let runtime_crate = &self.runtime_crate;
         let flowlog_batch = self.flowlog_batch_enabled();
         let mut inline_facts = BTreeMap::<RelationId, Vec<TokenStream>>::new();
@@ -173,7 +188,13 @@ impl HirProgram {
             .map(|relation| relation.id)
             .collect::<BTreeSet<_>>();
         for scc in &self.sccs {
-            stages.push(self.emit_scc(scc, &mut initialized, &mut emitted_transformations)?);
+            stages.push(self.emit_scc(
+                scc,
+                &mut initialized,
+                &mut emitted_transformations,
+                registry,
+                context,
+            )?);
         }
 
         let inspectors = idbs
@@ -347,9 +368,11 @@ impl HirProgram {
         scc: &Scc,
         initialized: &mut BTreeSet<RelationId>,
         emitted_transformations: &mut BTreeSet<String>,
+        registry: &Registry,
+        context: &mut CompilerContext,
     ) -> Result<TokenStream> {
         if scc.recursive {
-            let emitted = self.emit_recursive_scc(scc, initialized)?;
+            let emitted = self.emit_recursive_scc(scc, initialized, registry, context)?;
             initialized.extend(
                 scc.rules
                     .iter()
@@ -363,7 +386,12 @@ impl HirProgram {
                 if self.rules[rule_index].body.is_empty() {
                     continue;
                 }
-                emitted.extend(self.emit_non_recursive_rule(rule_index, initialized)?);
+                emitted.extend(self.emit_non_recursive_rule(
+                    rule_index,
+                    initialized,
+                    registry,
+                    context,
+                )?);
             }
             let contains_generic_emission = emitted.iter().any(|emission| {
                 syn::parse2::<syn::Block>(quote! {{ #emission }}).is_ok_and(|block| {
@@ -498,6 +526,8 @@ impl HirProgram {
         &self,
         rule_index: usize,
         initialized: &mut BTreeSet<RelationId>,
+        registry: &Registry,
+        context: &mut CompilerContext,
     ) -> Result<Vec<TokenStream>> {
         if let Some((target_relation, emitted)) =
             self.emit_flowlog_single_atom_expression(rule_index, initialized)
@@ -539,7 +569,8 @@ impl HirProgram {
         let mut emitted = Vec::with_capacity(rule.heads.len());
         for head in &rule.heads {
             let derived = format_ident!("__miniflow_rule_{}", emitted.len());
-            let expression = self.emit_rule_expression(rule, head, ScopeMode::Outer)?;
+            let expression =
+                self.emit_rule_expression(rule, head, ScopeMode::Outer, registry, context)?;
             let target = collection_ident(&self.relations[head.relation.0]);
             if initialized.insert(head.relation) {
                 emitted.push(quote! {
@@ -2458,6 +2489,8 @@ impl HirProgram {
         &self,
         scc: &Scc,
         initialized: &mut BTreeSet<RelationId>,
+        registry: &Registry,
+        context: &mut CompilerContext,
     ) -> Result<TokenStream> {
         if let Some((target, emitted)) = self.emit_flowlog_symmetric_closure(scc, initialized) {
             initialized.insert(target);
@@ -2541,6 +2574,8 @@ impl HirProgram {
                         ScopeMode::Inner {
                             recursive: &recursive_relations,
                         },
+                        registry,
+                        context,
                     )?);
             }
         }
@@ -3656,63 +3691,144 @@ impl HirProgram {
         rule: &Rule,
         head: &Atom,
         mode: ScopeMode,
+        registry: &Registry,
+        context: &mut CompilerContext,
     ) -> Result<TokenStream> {
-        if rule.body.is_empty() {
-            let head_tuple = emit_head_tuple_tokens(head, &BTreeMap::new())?;
-            return Ok(quote! {
-                {
-                    let (mut __miniflow_fact_handle, __miniflow_fact_collection) =
-                        scope.new_collection::<_, Diff>();
-                    __miniflow_fact_handle.update(#head_tuple, SEMIRING_ONE);
-                    __miniflow_fact_handle.close();
-                    __miniflow_fact_collection
-                }
+        let plan =
+            registry.perform::<PlanRule>(context, RuleRequest::new(rule.clone(), head.clone()))?;
+        let mut rendered = None;
+
+        for node in plan.graph().nodes() {
+            let operator = node.operator();
+            if operator == FACT {
+                let projection = plan
+                    .projection(node.id())
+                    .expect("a fact node has a projection fact");
+                let head_tuple = emit_head_tuple_tokens(&projection.head, &BTreeMap::new())?;
+                return Ok(quote! {
+                    {
+                        let (mut __miniflow_fact_handle, __miniflow_fact_collection) =
+                            scope.new_collection::<_, Diff>();
+                        __miniflow_fact_handle.update(#head_tuple, SEMIRING_ONE);
+                        __miniflow_fact_handle.close();
+                        __miniflow_fact_collection
+                    }
+                });
+            }
+            if operator == PROJECT {
+                debug_assert_eq!(node.id(), plan.root());
+                let projection = plan
+                    .projection(node.id())
+                    .expect("a project node has a projection fact");
+                let rendered = require_rendering(rendered)?;
+                debug_assert_eq!(rendered.bindings, projection.bindings);
+                let expression = &rendered.expression;
+                let bindings =
+                    environment_bindings(&projection.bindings, &quote! { __environment });
+                let lets = binding_lets(&bindings);
+                let head_tuple = emit_head_tuple_tokens(&projection.head, &bindings)?;
+                return Ok(quote! {
+                    #expression.map(move |__environment| {
+                        #(#lets)*
+                        #head_tuple
+                    })
+                });
+            }
+
+            let step = plan
+                .step(node.id())
+                .expect("a rule operator has a rule-step fact");
+            debug_assert!(match &rendered {
+                Some(state) => state.bindings == step.before,
+                None => step.before.is_empty(),
             });
+            rendered = Some(self.render_rule_step(operator, step, rendered, mode)?);
+            debug_assert_eq!(
+                rendered.as_ref().map(|state| &state.bindings),
+                Some(&step.after)
+            );
         }
 
-        let mut plan = None;
-        for item in &rule.body {
-            plan = Some(match item {
-                BodyItem::Atom(atom) => match plan {
-                    Some(current) => self.emit_joined_atom(&current, atom, mode),
-                    None => self.emit_first_atom(atom, mode),
-                },
-                BodyItem::NegatedAtom(atom) => {
-                    self.emit_negated_atom(require_plan(plan)?, atom, mode)?
-                }
-                BodyItem::Condition(condition) => {
-                    Self::emit_condition(require_plan(plan)?, condition)
-                }
-                BodyItem::Let {
-                    pattern,
-                    expression,
-                } => Self::emit_let(&require_plan(plan)?, pattern, expression)?,
-                BodyItem::IfLet {
-                    pattern,
-                    expression,
-                } => Self::emit_if_let(&require_plan(plan)?, pattern, expression)?,
-                BodyItem::Generator {
-                    pattern,
-                    expression,
-                } => Self::emit_generator(&require_plan(plan)?, pattern, expression)?,
-                BodyItem::Aggregate(aggregate) => self.emit_aggregate(plan, aggregate, mode)?,
-            });
-        }
-        let plan = plan.expect("non-empty body must produce a plan");
-
-        let expression = &plan.expression;
-        let bindings = environment_bindings(&plan.bindings, &quote! { __environment });
-        let lets = binding_lets(&bindings);
-        let head_tuple = emit_head_tuple_tokens(head, &bindings)?;
-        Ok(quote! {
-            #expression.map(move |__environment| {
-                #(#lets)*
-                #head_tuple
-            })
-        })
+        Err(syn::Error::new(
+            Span::call_site(),
+            "rule plan has no terminal projection",
+        ))
     }
 
-    fn emit_condition(mut plan: EnvironmentPlan, condition: &Expr) -> EnvironmentPlan {
+    fn render_rule_step(
+        &self,
+        operator: OperatorKey,
+        step: &RuleStep,
+        rendered: Option<RenderedEnvironment>,
+        mode: ScopeMode,
+    ) -> Result<RenderedEnvironment> {
+        if operator == SOURCE {
+            let BodyItem::Atom(atom) = &step.item else {
+                unreachable!("a source node contains an atom")
+            };
+            Ok(self.emit_first_atom(atom, mode))
+        } else if operator == JOIN {
+            let BodyItem::Atom(atom) = &step.item else {
+                unreachable!("a join node contains an atom")
+            };
+            Ok(self.emit_joined_atom(rendered.as_ref().expect("a join has an input"), atom, mode))
+        } else if operator == ANTIJOIN {
+            let BodyItem::NegatedAtom(atom) = &step.item else {
+                unreachable!("an antijoin node contains a negated atom")
+            };
+            self.emit_negated_atom(require_rendering(rendered)?, atom, mode)
+        } else if operator == CONDITION {
+            let BodyItem::Condition(condition) = &step.item else {
+                unreachable!("a condition node contains a condition")
+            };
+            Ok(Self::emit_condition(
+                require_rendering(rendered)?,
+                condition,
+            ))
+        } else if operator == LET {
+            let BodyItem::Let {
+                pattern,
+                expression,
+            } = &step.item
+            else {
+                unreachable!("a let node contains a let binding")
+            };
+            Self::emit_let(&require_rendering(rendered)?, pattern, expression)
+        } else if operator == IF_LET {
+            let BodyItem::IfLet {
+                pattern,
+                expression,
+            } = &step.item
+            else {
+                unreachable!("an if-let node contains an if-let binding")
+            };
+            Self::emit_if_let(&require_rendering(rendered)?, pattern, expression)
+        } else if operator == GENERATOR {
+            let BodyItem::Generator {
+                pattern,
+                expression,
+            } = &step.item
+            else {
+                unreachable!("a generator node contains a generator binding")
+            };
+            Self::emit_generator(&require_rendering(rendered)?, pattern, expression)
+        } else if operator == AGGREGATE {
+            let BodyItem::Aggregate(aggregate) = &step.item else {
+                unreachable!("an aggregate node contains an aggregate")
+            };
+            self.emit_aggregate(rendered, aggregate, mode)
+        } else {
+            Err(syn::Error::new(
+                Span::call_site(),
+                format!(
+                    "no Differential Dataflow renderer for `{}`",
+                    operator.name()
+                ),
+            ))
+        }
+    }
+
+    fn emit_condition(mut plan: RenderedEnvironment, condition: &Expr) -> RenderedEnvironment {
         let expression = &plan.expression;
         let bindings = environment_bindings(&plan.bindings, &quote! { __environment });
         let lets = binding_lets(&bindings);
@@ -3726,16 +3842,16 @@ impl HirProgram {
     }
 
     fn emit_let(
-        plan: &EnvironmentPlan,
+        plan: &RenderedEnvironment,
         pattern: &syn::Pat,
         value: &Expr,
-    ) -> Result<EnvironmentPlan> {
+    ) -> Result<RenderedEnvironment> {
         let (bindings, variables) = extended_bindings(&plan.bindings, pattern)?;
         let expression = &plan.expression;
         let old_bindings = environment_bindings(&plan.bindings, &quote! { __environment });
         let lets = binding_lets(&old_bindings);
         let fields = extended_environment_fields(plan.bindings.len(), &variables);
-        Ok(EnvironmentPlan {
+        Ok(RenderedEnvironment {
             expression: quote! {
                 #expression.map(move |__environment| {
                     #(#lets)*
@@ -3748,16 +3864,16 @@ impl HirProgram {
     }
 
     fn emit_if_let(
-        plan: &EnvironmentPlan,
+        plan: &RenderedEnvironment,
         pattern: &syn::Pat,
         value: &Expr,
-    ) -> Result<EnvironmentPlan> {
+    ) -> Result<RenderedEnvironment> {
         let (bindings, variables) = extended_bindings(&plan.bindings, pattern)?;
         let expression = &plan.expression;
         let old_bindings = environment_bindings(&plan.bindings, &quote! { __environment });
         let lets = binding_lets(&old_bindings);
         let fields = extended_environment_fields(plan.bindings.len(), &variables);
-        Ok(EnvironmentPlan {
+        Ok(RenderedEnvironment {
             expression: quote! {
                 #expression.flat_map(move |__environment| {
                     #(#lets)*
@@ -3773,16 +3889,16 @@ impl HirProgram {
     }
 
     fn emit_generator(
-        plan: &EnvironmentPlan,
+        plan: &RenderedEnvironment,
         pattern: &syn::Pat,
         source: &Expr,
-    ) -> Result<EnvironmentPlan> {
+    ) -> Result<RenderedEnvironment> {
         let (bindings, variables) = extended_bindings(&plan.bindings, pattern)?;
         let expression = &plan.expression;
         let old_bindings = environment_bindings(&plan.bindings, &quote! { __environment });
         let lets = binding_lets(&old_bindings);
         let fields = extended_environment_fields(plan.bindings.len(), &variables);
-        Ok(EnvironmentPlan {
+        Ok(RenderedEnvironment {
             expression: quote! {
                 #expression.flat_map(move |__environment| {
                     #(#lets)*
@@ -3800,10 +3916,10 @@ impl HirProgram {
     #[allow(clippy::too_many_lines)]
     fn emit_aggregate(
         &self,
-        plan: Option<EnvironmentPlan>,
+        plan: Option<RenderedEnvironment>,
         aggregate: &Aggregate,
         mode: ScopeMode<'_>,
-    ) -> Result<EnvironmentPlan> {
+    ) -> Result<RenderedEnvironment> {
         let operator = aggregate.operator.to_string();
         if !matches!(operator.as_str(), "min" | "max" | "sum" | "mean" | "count") {
             return Err(syn::Error::new(
@@ -3928,13 +4044,13 @@ impl HirProgram {
             }
         };
 
-        Ok(EnvironmentPlan {
+        Ok(RenderedEnvironment {
             expression,
             bindings,
         })
     }
 
-    fn emit_first_atom(&self, atom: &Atom, mode: ScopeMode) -> EnvironmentPlan {
+    fn emit_first_atom(&self, atom: &Atom, mode: ScopeMode) -> RenderedEnvironment {
         let relation = &self.relations[atom.relation.0];
         let collection = mode.collection(relation);
         let row_bindings = row_bindings(relation);
@@ -3989,7 +4105,7 @@ impl HirProgram {
                 }
             })
         };
-        EnvironmentPlan {
+        RenderedEnvironment {
             expression,
             bindings,
         }
@@ -3997,10 +4113,10 @@ impl HirProgram {
 
     fn emit_negated_atom(
         &self,
-        plan: EnvironmentPlan,
+        plan: RenderedEnvironment,
         atom: &Atom,
         mode: ScopeMode<'_>,
-    ) -> Result<EnvironmentPlan> {
+    ) -> Result<RenderedEnvironment> {
         let relation = &self.relations[atom.relation.0];
         let rows = row_bindings(relation);
         let row_pattern = tuple(rows.iter().map(|row| quote! { #row }));
@@ -4075,7 +4191,7 @@ impl HirProgram {
             }
         };
 
-        Ok(EnvironmentPlan {
+        Ok(RenderedEnvironment {
             expression,
             bindings: plan.bindings,
         })
@@ -4083,10 +4199,10 @@ impl HirProgram {
 
     fn emit_joined_atom(
         &self,
-        plan: &EnvironmentPlan,
+        plan: &RenderedEnvironment,
         atom: &Atom,
         mode: ScopeMode,
-    ) -> EnvironmentPlan {
+    ) -> RenderedEnvironment {
         let relation = &self.relations[atom.relation.0];
         let rows = row_bindings(relation);
         let row_pattern = tuple(rows.iter().map(|row| quote! { #row }));
@@ -4169,7 +4285,7 @@ impl HirProgram {
                 .flat_map(|row| row)
         };
 
-        EnvironmentPlan {
+        RenderedEnvironment {
             expression,
             bindings,
         }
@@ -4188,21 +4304,14 @@ impl HirProgram {
     }
 }
 
-struct EnvironmentPlan {
+struct RenderedEnvironment {
     expression: TokenStream,
     bindings: BindingMap,
 }
 
-#[derive(Clone)]
-struct Binding {
-    index: usize,
-    ident: Ident,
-}
-
-type BindingMap = BTreeMap<String, Binding>;
 type BindingSources = BTreeMap<String, (Ident, TokenStream)>;
 
-fn require_plan(plan: Option<EnvironmentPlan>) -> Result<EnvironmentPlan> {
+fn require_rendering(plan: Option<RenderedEnvironment>) -> Result<RenderedEnvironment> {
     plan.ok_or_else(|| {
         syn::Error::new(
             Span::call_site(),
