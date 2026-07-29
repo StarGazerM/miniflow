@@ -59,6 +59,9 @@ pub const RELATION_INPUT: OperatorKey = OperatorKey::new("miniflow.flowlog.relat
 /// FlowLog-compatible arranged binary join.
 pub const BINARY_JOIN: OperatorKey = OperatorKey::new("miniflow.flowlog.binary-join");
 
+/// FlowLog-compatible two-stage three-relation join.
+pub const THREE_ATOM_JOIN: OperatorKey = OperatorKey::new("miniflow.flowlog.three-atom-join");
+
 /// Physical facts needed to render one FlowLog-compatible unary rule.
 #[derive(Clone)]
 pub struct SingleAtomPlan {
@@ -497,9 +500,45 @@ pub struct BinaryJoinPlan {
     pub target_initialized: bool,
 }
 
+/// Physical facts needed to render a two-stage three-relation join.
+#[derive(Clone)]
+pub struct ThreeAtomJoinPlan {
+    /// Physical operator node described by these facts.
+    pub node: NodeId,
+    /// Rule head produced by the final join.
+    pub head: Atom,
+    /// Resolved output relation.
+    pub target_relation: Relation,
+    /// Left input of the first join.
+    pub left: JoinSidePlan,
+    /// Right input of the first join.
+    pub right: JoinSidePlan,
+    /// Input joined with the first-stage state.
+    pub third: JoinSidePlan,
+    /// First-stage join-key variables.
+    pub shared: Vec<String>,
+    /// Names carried by the first-stage left value.
+    pub left_values: Vec<String>,
+    /// Names carried by the first-stage right value.
+    pub right_values: Vec<String>,
+    /// Names used to key the second join.
+    pub next_keys: Vec<String>,
+    /// Names carried in the first-stage state value.
+    pub state_values: Vec<String>,
+    /// Names carried by the third input value.
+    pub third_values: Vec<String>,
+    /// FlowLog-compatible first-stage join fingerprint.
+    pub first_join_fingerprint: u64,
+    /// FlowLog-compatible final join fingerprint.
+    pub final_fingerprint: u64,
+    /// Whether deterministic layout places the third input on the final left.
+    pub swap: bool,
+}
+
 pub(crate) fn install(registry: &mut Registry) {
     registry.around::<PlanRule, _>(|context, request, next| {
-        if let Some(plan) = plan_binary_join(&request)
+        if let Some(plan) = plan_three_atom_join(&request)
+            .or_else(|| plan_binary_join(&request))
             .or_else(|| plan_tuple_equijoin(&request))
             .or_else(|| plan_unary_antijoin(&request))
             .or_else(|| plan_direct_aggregate(&request))
@@ -1050,6 +1089,323 @@ fn plan_tuple_equijoin(request: &RuleRequest) -> Option<RulePlan> {
         join_fingerprint,
     });
     Some(RulePlan::from_graph(graph, node))
+}
+
+#[allow(clippy::too_many_lines)]
+fn plan_three_atom_join(request: &RuleRequest) -> Option<RulePlan> {
+    if request.recursive() {
+        return None;
+    }
+    let rule = request.rule();
+    let [head] = rule.heads.as_slice() else {
+        return None;
+    };
+    let [
+        BodyItem::Atom(first),
+        BodyItem::Atom(second),
+        BodyItem::Atom(third),
+        tail @ ..,
+    ] = rule.body.as_slice()
+    else {
+        return None;
+    };
+    let conditions = tail
+        .iter()
+        .map(|item| match item {
+            BodyItem::Condition(Expr::Binary(condition)) => Some(condition.clone()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if [first, second, third]
+        .iter()
+        .any(|atom| !request.initialized().contains(&atom.relation))
+    {
+        return None;
+    }
+    let first_names = atom_variables(first)?;
+    let second_names = atom_variables(second)?;
+    let third_names = atom_variables(third)?;
+    let first_set = variable_set(&first_names);
+    let second_set = variable_set(&second_names);
+    let third_set = variable_set(&third_names);
+    let local_conditions =
+        |own: &std::collections::BTreeSet<String>,
+         other_a: &std::collections::BTreeSet<String>,
+         other_b: &std::collections::BTreeSet<String>| {
+            conditions
+                .iter()
+                .filter(|condition| {
+                    let used = crate::flowlog_analysis::binary_expression_variables(condition);
+                    used.is_subset(own) && !used.is_subset(other_a) && !used.is_subset(other_b)
+                })
+                .cloned()
+                .collect_vec()
+        };
+    let first_conditions = local_conditions(&first_set, &second_set, &third_set);
+    let second_conditions = local_conditions(&second_set, &first_set, &third_set);
+    let third_conditions = local_conditions(&third_set, &first_set, &second_set);
+    if first_conditions.len() + second_conditions.len() + third_conditions.len() != conditions.len()
+    {
+        return None;
+    }
+    let head_names = head
+        .arguments
+        .iter()
+        .map(variable_name)
+        .collect::<Option<Vec<_>>>()?;
+    let shared = first_names
+        .iter()
+        .flatten()
+        .filter(|name| second_names.iter().flatten().any(|item| item == *name))
+        .cloned()
+        .unique()
+        .collect_vec();
+    if shared.is_empty() {
+        return None;
+    }
+    let live = head_names
+        .iter()
+        .chain(third_names.iter().flatten())
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let payload = |side: &[Option<String>]| {
+        side.iter()
+            .flatten()
+            .filter(|name| !shared.contains(name) && live.contains(*name))
+            .cloned()
+            .collect_vec()
+    };
+    let first_values = payload(&first_names);
+    let second_values = payload(&second_names);
+    let (
+        left,
+        left_names,
+        left_values,
+        left_conditions,
+        right,
+        right_names,
+        right_values,
+        right_conditions,
+    ) = if !first_values.is_empty() && second_values.is_empty() {
+        (
+            second,
+            second_names,
+            second_values,
+            second_conditions,
+            first,
+            first_names,
+            first_values,
+            first_conditions,
+        )
+    } else {
+        (
+            first,
+            first_names,
+            first_values,
+            first_conditions,
+            second,
+            second_names,
+            second_values,
+            second_conditions,
+        )
+    };
+    let left_side = plan_named_join_side(
+        request,
+        left,
+        left_names,
+        &left_values,
+        &shared,
+        left_conditions,
+    )?;
+    let right_side = plan_named_join_side(
+        request,
+        right,
+        right_names,
+        &right_values,
+        &shared,
+        right_conditions,
+    )?;
+    let natural = shared
+        .iter()
+        .chain(&left_values)
+        .chain(&right_values)
+        .cloned()
+        .unique()
+        .collect_vec();
+    let next_keys = third_names
+        .iter()
+        .flatten()
+        .filter(|name| natural.contains(name))
+        .cloned()
+        .unique()
+        .collect_vec();
+    let state_values = natural
+        .iter()
+        .filter(|name| !next_keys.contains(name) && head_names.contains(name))
+        .cloned()
+        .collect_vec();
+    let first_argument = |name: &String| {
+        if let Some(index) = shared.iter().position(|item| item == name) {
+            Some(TransformationArgument::Jn((true, true, index)))
+        } else if let Some(index) = left_values.iter().position(|item| item == name) {
+            Some(TransformationArgument::Jn((true, false, index)))
+        } else {
+            let index = right_values.iter().position(|item| item == name)?;
+            Some(TransformationArgument::Jn((false, false, index)))
+        }
+    };
+    let state_keys = next_keys
+        .iter()
+        .map(&first_argument)
+        .collect::<Option<Vec<_>>>()?;
+    let state_payload = state_values
+        .iter()
+        .map(&first_argument)
+        .collect::<Option<Vec<_>>>()?;
+    let first_join_fingerprint = flowlog_fp::join(
+        "jn_to_kv",
+        left_side.fingerprint,
+        right_side.fingerprint,
+        state_keys,
+        state_payload,
+    );
+    let third_values = third_names
+        .iter()
+        .flatten()
+        .filter(|name| !next_keys.contains(name) && head_names.contains(name))
+        .cloned()
+        .collect_vec();
+    let third_side = plan_named_join_side(
+        request,
+        third,
+        third_names,
+        &third_values,
+        &next_keys,
+        third_conditions,
+    )?;
+    let swap = !state_values.is_empty() && third_values.is_empty();
+    let (final_left, final_right) = if swap {
+        (third_side.fingerprint, first_join_fingerprint)
+    } else {
+        (first_join_fingerprint, third_side.fingerprint)
+    };
+    let final_outputs = head_names
+        .iter()
+        .map(|name| {
+            if let Some(index) = next_keys.iter().position(|item| item == name) {
+                Some(TransformationArgument::Jn((true, true, index)))
+            } else if let Some(index) = state_values.iter().position(|item| item == name) {
+                Some(TransformationArgument::Jn((!swap, false, index)))
+            } else {
+                let index = third_values.iter().position(|item| item == name)?;
+                Some(TransformationArgument::Jn((swap, false, index)))
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let final_fingerprint =
+        flowlog_fp::join("jn_to_row", final_left, final_right, [], final_outputs);
+    let mut graph = Plan::default();
+    let left_input = graph.add_node(RELATION_INPUT, []);
+    let right_input = graph.add_node(RELATION_INPUT, []);
+    let first_join = graph.add_node(BINARY_JOIN, [left_input, right_input]);
+    let third_input = graph.add_node(RELATION_INPUT, []);
+    let node = graph.add_node(THREE_ATOM_JOIN, [first_join, third_input]);
+    graph.facts_mut().insert(ThreeAtomJoinPlan {
+        node,
+        head: head.clone(),
+        target_relation: request.catalog().relation(head.relation).clone(),
+        left: left_side,
+        right: right_side,
+        third: third_side,
+        shared,
+        left_values,
+        right_values,
+        next_keys,
+        state_values,
+        third_values,
+        first_join_fingerprint,
+        final_fingerprint,
+        swap,
+    });
+    Some(RulePlan::from_graph(graph, node))
+}
+
+fn plan_named_join_side(
+    request: &RuleRequest,
+    atom: &Atom,
+    variables: Vec<Option<String>>,
+    value_names: &[String],
+    key_names: &[String],
+    conditions: Vec<syn::ExprBinary>,
+) -> Option<JoinSidePlan> {
+    let relation = request.catalog().relation(atom.relation);
+    let bindings = variables
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| Some((name.clone()?, index)))
+        .collect::<BTreeMap<_, _>>();
+    let keys = key_names
+        .iter()
+        .map(|name| {
+            variables
+                .iter()
+                .position(|candidate| candidate.as_ref() == Some(name))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let values = value_names
+        .iter()
+        .map(|name| {
+            variables
+                .iter()
+                .position(|candidate| candidate.as_ref() == Some(name))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let comparisons = conditions
+        .iter()
+        .map(|comparison| {
+            let data_type = expression_type(&comparison.left, &bindings, relation)
+                .or_else(|| expression_type(&comparison.right, &bindings, relation))?;
+            Some(flowlog_fp::ComparisonExprArgument {
+                left: flowlog_arithmetic(&comparison.left, &bindings, &data_type)?,
+                operator: flowlog_comparison_operator(&comparison.op)?,
+                right: flowlog_arithmetic(&comparison.right, &bindings, &data_type)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let alias = keys.len() == relation.columns.len() && values.is_empty() && comparisons.is_empty();
+    let fingerprint = flowlog_fp::unary_expressions(
+        "row_to_kv",
+        flowlog_fp::relation(&relation_fingerprint_name(relation)),
+        keys.iter()
+            .map(|&index| {
+                crate::flowlog_analysis::flowlog_variable(TransformationArgument::KV((
+                    false, index,
+                )))
+            })
+            .collect(),
+        values
+            .iter()
+            .map(|&index| {
+                crate::flowlog_analysis::flowlog_variable(TransformationArgument::KV((
+                    false, index,
+                )))
+            })
+            .collect(),
+        Vec::new(),
+        Vec::new(),
+        comparisons,
+    );
+    Some(JoinSidePlan {
+        atom: atom.clone(),
+        relation: relation.clone(),
+        variables,
+        keys,
+        values,
+        bindings,
+        conditions,
+        alias,
+        fingerprint,
+    })
 }
 
 #[allow(clippy::too_many_lines)]
