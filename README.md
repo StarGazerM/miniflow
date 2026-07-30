@@ -5,18 +5,17 @@ and the embedded compiler shape of Ascent.
 
 The implementation has three production crates:
 
-- `miniflow-core`: the syntax-neutral source model, relational HIR, dependency
-  SCCs, planning, and canonical Rust emission.
-- `miniflow-macro`: the private MiniFlow token parser and procedural-macro
-  driver that installs the parser into `miniflow-core`.
+- `miniflow-core`: the default MiniFlow syntax, public source model, relational
+  HIR, typed compiler pipeline, planning, and canonical Rust emission.
+- `miniflow-macro`: the thin built-in procedural-macro entry point.
 - `miniflow`: the runtime used by generated programs. It has no compiler,
   macro, or syntax dependency.
 
-There is one surface macro and one rule arrow: `miniflow!` accepts MiniFlow
-rules written with `:-`. There is no Ascent-facing macro, parser mode, feature,
-or facade crate.
+The project ships one surface macro and one rule arrow: `miniflow!` accepts
+MiniFlow rules written with `:-`. There is no Ascent-facing macro, parser mode,
+feature, or facade crate.
 
-The uncoupled dependency form selects the driver explicitly:
+The uncoupled dependency form selects the proc macro explicitly:
 
 ```toml
 [dependencies]
@@ -41,27 +40,36 @@ miniflow! {
 
 ### Compiler and syntax boundary
 
-`ReadSource` is an open compiler operation from Rust tokens to the public
-`source::Program` model. `Compiler::base()` installs no reader and there is no
-grammar-selecting constructor in core. The `miniflow-macro` driver installs
-its private parser, then reuses name and arity resolution, SCC construction,
-physical planning, and DD rendering:
+`CompilerPipeline` exposes four typed, replaceable boundaries:
 
 ```text
-application --> miniflow-macro --> miniflow-core
-generated Rust --------------------> miniflow runtime
+TokenStream -> source::Program -> HirProgram -> ProgramPlan -> TokenStream
+                reader          lowerer       planner        renderer
 ```
 
-The structural token parser is a private module of `miniflow-macro`, not a
-reusable syntax crate and not part of `miniflow-core`. The public `miniflow`
-runtime does not depend on either compiler crate.
+Each stage can be replaced with a function of the same type, or extended by
+inserting a carrier-preserving function after it. Fine-grained `PlanRule` and
+`PlanScc` layers remain available inside the planning stage. This is a
+direct-style pipeline; stage outputs are ordinary typed values, not a CPS code
+stream.
+
+The default parser and composition are ordinary public functions in
+`miniflow-core`, so a downstream proc-macro can start from
+`default_pipeline()`, insert or replace stages, and then call `expand`. The
+shipped `miniflow-macro` does only the final rustc proc-macro wrapping:
+
+```text
+application --> custom macro or miniflow-macro --> miniflow-core
+generated Rust ----------------------------------> miniflow runtime
+```
 
 The external-layer integration test includes a distinct `graph Program;`
 surface and proves that it produces the identical expansion without rewriting
-to MiniFlow tokens. A genuinely different surface can publish its own driver,
-implement `ReadSource`, and depend on `miniflow-core` plus the runtime without
-editing either. The dependency gate verifies that neither `miniflow-core` nor
-`miniflow` selects a syntax.
+to MiniFlow tokens. A separate proc-macro fixture additionally inserts an HIR
+pass and replaces the planner. A genuinely different surface can construct
+`CompilerPipeline::new(reader)` directly; a MiniFlow-compatible macro can
+reuse `miniflow_core::default_pipeline()`. Neither requires editing this
+repository.
 
 ## Usage
 
@@ -94,30 +102,47 @@ fn main() {
 }
 ```
 
-The checked-in CSV-backed version can be run directly:
+### Inline Rust computation
 
-```console
-$ (cd parity/flowlog/reach && cargo run --quiet -p miniflow-macro --example parity_reach)
-1
-2
-3
+A rule-body `let` accepts a Rust pattern and any Rust expression. Because a
+block is an expression, computation can contain nested local bindings,
+conditionals, matches, calls, and closures:
+
+```rust
+miniflow! {
+    struct Adjusted;
+    relation input(i32);
+    relation output(i32);
+
+    output(adjusted) :-
+        input(value),
+        let adjusted = {
+            let doubled = *value * 2;
+            if doubled > 10 {
+                doubled + 1
+            } else {
+                doubled
+            }
+        };
+}
 ```
+
+The block runs inside the generated dataflow operator for each matching row.
+A rule must still begin with a positive relational atom, existing rule
+variables are references, and the `let` pattern must be irrefutable. Use
+`if let` for a refutable pattern. Side effects should be avoided because rows
+may be evaluated in parallel and without a deterministic execution order.
+
+The pinned FlowLog frontend cannot embed an equivalent Rust block or `let`
+clause directly in a `.dl` rule. Its rule bodies contain relational atoms,
+comparisons, string constraints, negation, and disjunction. FlowLog can still
+call Rust through a declared `.extern fn`, but its implementation must live in
+a separate Rust UDF file supplied to the compiler with `--udf`. MiniFlow's
+difference is direct host-Rust embedding inside the rule, not an exclusive
+ability to invoke Rust.
+
 
 ## The same dataflow as FlowLog
-
-The MiniFlow rules above correspond to this FlowLog program:
-
-```datalog
-.decl Source(id: int32)
-.input Source(IO="file", filename="Source.csv", delimiter=",")
-.decl Arc(x: int32, y: int32)
-.input Arc(IO="file", filename="Arc.csv", delimiter=",")
-
-.decl Reach(id: int32)
-Reach(y) :- Source(y).
-Reach(y) :- Reach(x), Arc(x,y).
-.output Reach
-```
 
 The two front ends have different host shells: FlowLog generates a standalone
 CSV-driven executable, while MiniFlow generates an embedded Rust type.
@@ -193,11 +218,11 @@ features cannot rebuild a monolithic planning/code-generation module.
 <!-- BEGIN TOKEI COMPARISON -->
 | Production Rust | Files | Lines | Code | Comments | Blanks |
 |---|---:|---:|---:|---:|---:|
-| MiniFlow | 24 | 9506 | 8509 | 390 | 607 |
+| MiniFlow | 23 | 9595 | 8565 | 409 | 621 |
 | FlowLog batch stack | 151 | 39910 | 29303 | 6402 | 4205 |
 <!-- END TOKEI COMPARISON -->
 
-MiniFlow is 23.8% of the FlowLog stack by total source lines and 29.1% by Tokei
+MiniFlow is 24.0% of the FlowLog stack by total source lines and 29.2% by Tokei
 code lines. Equivalently, FlowLog contains about 3.4 times as much production
 code. `scripts/verify-size.sh` runs Tokei, enforces both size bounds, and
 rejects a stale README table.

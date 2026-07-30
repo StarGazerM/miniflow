@@ -339,6 +339,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "miniflow-custom-macro-fixture"
+version = "0.1.0"
+dependencies = [
+ "miniflow-core",
+ "proc-macro2",
+ "syn 3.0.3",
+]
+
+[[package]]
 name = "miniflow-flowlog-batch-corpus"
 version = "0.1.0"
 dependencies = [
@@ -367,6 +376,7 @@ version = "0.1.0"
 dependencies = [
  "miniflow",
  "miniflow-core",
+ "miniflow-custom-macro-fixture",
  "prettyplease",
  "proc-macro2",
  "quote",

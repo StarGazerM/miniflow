@@ -1,7 +1,6 @@
 //! The standard compiler transaction and its open planning operations.
 
-use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::{collections::BTreeSet, rc::Rc, sync::Arc};
 
 use proc_macro2::TokenStream;
 use syn::Result;
@@ -11,20 +10,7 @@ use crate::flowlog_plan;
 use crate::hir::{Atom, HirProgram, Relation, RelationId, Rule, Scc};
 use crate::rule_plan::RulePlan;
 use crate::scc_plan::SccPlan;
-use crate::{SourceProgram, lower};
-
-/// Open operation that reads one surface syntax into the shared source model.
-///
-/// A syntax pack replaces this operation and leaves resolution, SCC
-/// construction, planning, and rendering unchanged.
-pub struct ReadSource;
-
-impl Operation for ReadSource {
-    type Input = TokenStream;
-    type Output = SourceProgram;
-
-    const NAME: &'static str = "miniflow.read-source";
-}
+use crate::{SourceProgram, lower, program_plan::ProgramPlan};
 
 /// Immutable resolved-program context shared by rule-planning requests.
 #[derive(Clone)]
@@ -251,21 +237,13 @@ impl Compiler {
         &self.context
     }
 
-    /// Compile tokens with the standard `MiniFlow` runtime façade.
+    /// Plan one lowered program with the installed rule and SCC layers.
     ///
     /// # Errors
     ///
-    /// Returns syntax, semantic, planning, or rendering diagnostics.
-    pub fn compile(&mut self, tokens: TokenStream) -> Result<TokenStream> {
-        let program = self
-            .registry
-            .perform::<ReadSource>(&mut self.context, tokens)?;
-        let hir = lower(program)?;
-        self.emit_hir(&hir)
-    }
-
-    pub(crate) fn emit_hir(&mut self, hir: &HirProgram) -> Result<TokenStream> {
-        crate::program_plan::ProgramPlan::build(hir, &self.registry, &mut self.context)?.render()
+    /// Returns diagnostics from rule or SCC planning.
+    pub fn plan(&mut self, hir: &HirProgram) -> Result<ProgramPlan> {
+        ProgramPlan::build(hir, &self.registry, &mut self.context)
     }
 }
 
@@ -277,6 +255,104 @@ impl HirProgram {
     /// Returns a compiler diagnostic when the program cannot be planned or
     /// rendered by the standard compiler.
     pub fn emit(&self) -> Result<TokenStream> {
-        Compiler::base()?.emit_hir(self)
+        Compiler::base()?.plan(self)?.render()
+    }
+}
+
+type StageFn<I, O> = dyn Fn(&mut Compiler, I) -> Result<O>;
+
+macro_rules! stage_accessor {
+    ($name:ident, $field:ident, $input:ty => $output:ty, $doc:literal) => {
+        #[doc = $doc]
+        pub const fn $name(&mut self) -> &mut CompilerStage<$input, $output> {
+            &mut self.$field
+        }
+    };
+}
+
+/// One replaceable, typed compiler stage.
+pub struct CompilerStage<I, O> {
+    function: Rc<StageFn<I, O>>,
+}
+
+impl<I: 'static, O: 'static> CompilerStage<I, O> {
+    fn new(function: impl Fn(&mut Compiler, I) -> Result<O> + 'static) -> Self {
+        Self {
+            function: Rc::new(function),
+        }
+    }
+
+    /// Replace this stage with another function having the same boundary.
+    pub fn replace(&mut self, function: impl Fn(&mut Compiler, I) -> Result<O> + 'static) {
+        self.function = Rc::new(function);
+    }
+
+    /// Run an additional carrier-preserving function after this stage.
+    pub fn insert_after(&mut self, function: impl Fn(&mut Compiler, O) -> Result<O> + 'static) {
+        let previous = Rc::clone(&self.function);
+        self.function = Rc::new(move |compiler, input| {
+            let output = previous(compiler, input)?;
+            function(compiler, output)
+        });
+    }
+
+    fn run(&self, compiler: &mut Compiler, input: I) -> Result<O> {
+        (self.function)(compiler, input)
+    }
+}
+
+/// Direct-style compiler pipeline with replaceable typed stage boundaries.
+pub struct CompilerPipeline {
+    compiler: Compiler,
+    reader: CompilerStage<TokenStream, SourceProgram>,
+    lowerer: CompilerStage<SourceProgram, HirProgram>,
+    planner: CompilerStage<HirProgram, ProgramPlan>,
+    renderer: CompilerStage<ProgramPlan, TokenStream>,
+}
+
+impl CompilerPipeline {
+    /// Construct the standard semantic pipeline with an explicit source reader.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic if the standard planner cannot be installed.
+    pub fn new(
+        reader: impl Fn(&mut Compiler, TokenStream) -> Result<SourceProgram> + 'static,
+    ) -> Result<Self> {
+        Ok(Self {
+            compiler: Compiler::base()?,
+            reader: CompilerStage::new(reader),
+            lowerer: CompilerStage::new(|_, source| lower(source)),
+            planner: CompilerStage::new(|compiler, hir| compiler.plan(&hir)),
+            renderer: CompilerStage::new(|_, plan: ProgramPlan| plan.render()),
+        })
+    }
+
+    /// Access the compiler used by the planning stage.
+    #[must_use]
+    pub const fn compiler(&self) -> &Compiler {
+        &self.compiler
+    }
+
+    /// Install fine-grained compiler layers or inspect compiler state.
+    pub const fn compiler_mut(&mut self) -> &mut Compiler {
+        &mut self.compiler
+    }
+
+    stage_accessor!(reader_mut, reader, TokenStream => SourceProgram, "Access the token-to-source stage.");
+    stage_accessor!(lowerer_mut, lowerer, SourceProgram => HirProgram, "Access the source-to-HIR stage.");
+    stage_accessor!(planner_mut, planner, HirProgram => ProgramPlan, "Access the HIR-to-plan stage.");
+    stage_accessor!(renderer_mut, renderer, ProgramPlan => TokenStream, "Access the plan-to-Rust stage.");
+
+    /// Execute the configured compiler pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns diagnostics from any configured stage.
+    pub fn expand(&mut self, tokens: TokenStream) -> Result<TokenStream> {
+        let source = self.reader.run(&mut self.compiler, tokens)?;
+        let hir = self.lowerer.run(&mut self.compiler, source)?;
+        let plan = self.planner.run(&mut self.compiler, hir)?;
+        self.renderer.run(&mut self.compiler, plan)
     }
 }

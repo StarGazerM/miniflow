@@ -1,10 +1,11 @@
-//! Surface parser for the `MiniFlow` procedural-macro driver.
+//! Default `MiniFlow` surface parser.
 
-use miniflow_core::source::{Aggregate, Atom, BodyItem, Program, Relation, Rule, Signature};
 use proc_macro2::TokenStream;
 use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::{Attribute, Expr, Generics, Pat, Result, Token, Type, WhereClause, parenthesized};
+
+use crate::source::{Aggregate, Atom, BodyItem, Program, Relation, Rule, Signature};
 
 mod kw {
     syn::custom_keyword!(agg);
@@ -12,8 +13,7 @@ mod kw {
 }
 
 pub(crate) fn parse(tokens: TokenStream) -> Result<Program> {
-    let parser = |input: ParseStream<'_>| parse_program(input);
-    parser.parse2(tokens)
+    (|input: ParseStream<'_>| parse_program(input)).parse2(tokens)
 }
 
 fn parse_program(input: ParseStream<'_>) -> Result<Program> {
@@ -76,7 +76,8 @@ fn parse_rule(input: ParseStream<'_>) -> Result<Rule> {
             body: Vec::new(),
         });
     }
-    parse_rule_arrow(input)?;
+    input.parse::<Token![:]>()?;
+    input.parse::<Token![-]>()?;
     let body = parse_nonempty(input, parse_body_item)?;
     input.parse::<Token![;]>()?;
     Ok(Rule { heads, body })
@@ -163,10 +164,4 @@ fn parse_nonempty<T>(
 ) -> Result<Vec<T>> {
     Punctuated::<T, Token![,]>::parse_separated_nonempty_with(input, parser)
         .map(|items| items.into_iter().collect())
-}
-
-fn parse_rule_arrow(input: ParseStream<'_>) -> Result<()> {
-    input.parse::<Token![:]>()?;
-    input.parse::<Token![-]>()?;
-    Ok(())
 }

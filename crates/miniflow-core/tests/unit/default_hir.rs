@@ -1,7 +1,7 @@
 use quote::quote;
 
+use crate::lower;
 use crate::syntax::parse;
-use miniflow_core::lower;
 
 #[test]
 fn infers_recursive_and_non_recursive_sccs() {

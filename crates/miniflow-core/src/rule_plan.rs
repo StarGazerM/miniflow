@@ -4,7 +4,7 @@
 //! an open [`Plan`](crate::plan::Plan). It performs semantic validation before
 //! the Differential Dataflow renderer sees the plan.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use proc_macro2::{Ident, Span};
 use syn::{Expr, Result};
@@ -64,6 +64,34 @@ impl RulePlan {
     /// Returns a semantic diagnostic for invalid binding, negation, or
     /// aggregate use.
     pub fn build(rule: &Rule, head: &Atom) -> Result<Self> {
+        Self::build_ordered(rule, head, 0..rule.body.len())
+    }
+
+    /// Construct a relational plan in a caller-selected body order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a diagnostic unless `order` is a permutation of every body
+    /// position, or when that order violates binding, negation, or aggregate
+    /// requirements.
+    pub fn build_with_order(rule: &Rule, head: &Atom, order: &[usize]) -> Result<Self> {
+        let positions = order.iter().copied().collect::<BTreeSet<_>>();
+        if order.len() != rule.body.len()
+            || positions != (0..rule.body.len()).collect::<BTreeSet<_>>()
+        {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "rule body order must contain every body position exactly once",
+            ));
+        }
+        Self::build_ordered(rule, head, order.iter().copied())
+    }
+
+    fn build_ordered(
+        rule: &Rule,
+        head: &Atom,
+        order: impl IntoIterator<Item = usize>,
+    ) -> Result<Self> {
         let mut graph = Plan::default();
         if rule.body.is_empty() {
             let root = graph.add_node(FACT, []);
@@ -77,7 +105,7 @@ impl RulePlan {
 
         let mut previous = None;
         let mut bindings = None;
-        for item in &rule.body {
+        for item in order.into_iter().map(|index| &rule.body[index]) {
             let before = bindings.clone().unwrap_or_default();
             let after = plan_item(bindings, item)?;
             let operator = operator(item, previous.is_some());

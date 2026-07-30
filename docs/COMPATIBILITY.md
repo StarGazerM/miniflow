@@ -23,9 +23,9 @@ miniflow! {
 }
 ```
 
-`miniflow!` is the only surface macro and `:-` is the only rule arrow. The
-parser is a private module of `miniflow-macro`; there is no reusable syntax
-crate, Ascent-facing macro, compatibility feature, or facade package.
+`miniflow!` is the only built-in surface macro and `:-` is its only rule arrow.
+The reusable default parser belongs to `miniflow-core`; there is no
+Ascent-facing macro, compatibility feature, driver, or facade package.
 
 Relation column types and expressions are Rust syntax trees. MiniFlow does not
 define an arithmetic AST, numeric coercions, casts, built-in string functions,
@@ -65,25 +65,28 @@ shared only at the embedded host boundary.
 
 ## One compiler path
 
-`miniflow-core` owns every semantic phase after an installed external reader:
+`miniflow-core` owns the typed pipeline and every semantic phase:
 
 ```text
 Rust tokens
-  -> installed ReadSource component outside core
+  -> reader supplied to CompilerPipeline
   -> syntax-neutral source program
   -> HIR
-  -> dependency SCCs and strata
-  -> DD plan
+  -> ProgramPlan (dependency SCCs, strata, and DD plan)
   -> canonical Rust token stream
 ```
 
-Core has no parser, default-syntax layer, `Compiler::new`, or free token-level
-`compile` convenience that can silently select a grammar. The `miniflow`
-runtime package also has no dependency on the compiler, macro, or syntax
-packages. An application explicitly selects `miniflow-macro`, which configures
-`Compiler::base()` with its reader. Expansion tests use the same configured
-path. There is no test-only renderer or separately maintained build-script
-compiler.
+The reader, lowerer, planner, and renderer are replaceable functions with
+checked input/output types. A carrier-preserving function can be inserted
+after any stage. The planner additionally exposes open `PlanRule` and `PlanScc`
+operations for changes smaller than whole-stage replacement.
+
+`miniflow-core::default_pipeline()` explicitly selects the built-in grammar. A
+downstream proc-macro can reuse that composition or construct
+`CompilerPipeline::new(reader)` for a different syntax. `miniflow-macro` is
+only the rustc-required proc-macro wrapper. The `miniflow` runtime package has
+no dependency on the compiler or macro packages. There is no test-only
+renderer or separately maintained build-script compiler.
 
 ## Exact expansion parity
 
@@ -135,8 +138,8 @@ For each overlap fixture, the parity harness:
 
 1. renders the corresponding `.dl` fixture through the pinned FlowLog batch
    compiler;
-2. renders the MiniFlow program through the private `miniflow-macro` parser and
-   the configured `miniflow-core` compiler;
+2. renders the MiniFlow program through the configured `miniflow-core`
+   pipeline;
 3. locates the unique `dataflow` closure in each generated Rust syntax tree;
 4. removes only host-adapter output sinks (`inspect`/`probe_with`) and the
    standalone closure's final input-handle return expression;
